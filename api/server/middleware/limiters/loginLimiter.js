@@ -1,10 +1,8 @@
-const Keyv = require('keyv');
 const rateLimit = require('express-rate-limit');
-const { RedisStore } = require('rate-limit-redis');
-const { removePorts, isEnabled } = require('~/server/utils');
-const keyvRedis = require('~/cache/keyvRedis');
+const { ErrorTypes, ViolationTypes } = require('librechat-data-provider');
+const { limiterCache, removePorts } = require('@librechat/api');
+const { isOAuthNavigation, redirectOAuthFailure } = require('~/server/middleware/oauthNavigation');
 const { logViolation } = require('~/cache');
-const { logger } = require('~/config');
 
 const { LOGIN_WINDOW = 5, LOGIN_MAX = 7, LOGIN_VIOLATION_SCORE: score } = process.env;
 const windowMs = LOGIN_WINDOW * 60 * 1000;
@@ -13,7 +11,7 @@ const windowInMinutes = windowMs / 60000;
 const message = `Too many login attempts, please try again after ${windowInMinutes} minutes.`;
 
 const handler = async (req, res) => {
-  const type = 'logins';
+  const type = ViolationTypes.LOGINS;
   const errorMessage = {
     type,
     max,
@@ -21,6 +19,12 @@ const handler = async (req, res) => {
   };
 
   await logViolation(req, res, type, errorMessage, score);
+
+  /** A browser navigation would render the JSON body as the page. */
+  if (isOAuthNavigation(req)) {
+    return redirectOAuthFailure(res, ErrorTypes.AUTH_RATE_LIMITED);
+  }
+
   return res.status(429).json({ message });
 };
 
@@ -29,19 +33,8 @@ const limiterOptions = {
   max,
   handler,
   keyGenerator: removePorts,
+  store: limiterCache('login_limiter'),
 };
-
-if (isEnabled(process.env.USE_REDIS)) {
-  logger.debug('Using Redis for login rate limiter.');
-  const keyv = new Keyv({ store: keyvRedis });
-  const client = keyv.opts.store.redis;
-  const sendCommand = (...args) => client.call(...args);
-  const store = new RedisStore({
-    sendCommand,
-    prefix: 'login_limiter:',
-  });
-  limiterOptions.store = store;
-}
 
 const loginLimiter = rateLimit(limiterOptions);
 

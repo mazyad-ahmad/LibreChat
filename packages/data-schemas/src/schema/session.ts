@@ -1,10 +1,5 @@
-import mongoose, { Schema, Document, Types } from 'mongoose';
-
-export interface ISession extends Document {
-  refreshTokenHash: string;
-  expiration: Date;
-  user: Types.ObjectId;
-}
+import mongoose, { Schema } from 'mongoose';
+import { ISession } from '~/types';
 
 const sessionSchema: Schema<ISession> = new Schema({
   refreshTokenHash: {
@@ -21,6 +16,12 @@ const sessionSchema: Schema<ISession> = new Schema({
     ref: 'User',
     required: true,
   },
+  tenantId: {
+    type: String,
+    index: true,
+  },
 });
+
+sessionSchema.index({ user: 1, refreshTokenHash: 1 }, { unique: true });
 
 export default sessionSchema;

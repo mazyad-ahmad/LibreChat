@@ -1,10 +1,8 @@
 import { useMemo } from 'react';
+import { OGDialog, Button, OGDialogTemplate, useToastContext } from '@librechat/client';
 import type { TTermsOfService } from 'librechat-data-provider';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
-import DialogTemplate from '~/components/ui/DialogTemplate';
 import { useAcceptTermsMutation } from '~/data-provider';
-import { useToastContext } from '~/Providers';
-import { OGDialog } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 
 const TermsAndConditionsModal = ({
@@ -65,7 +63,7 @@ const TermsAndConditionsModal = ({
 
   return (
     <OGDialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTemplate
+      <OGDialogTemplate
         title={title ?? localize('com_ui_terms_and_conditions')}
         className="w-11/12 max-w-3xl sm:w-3/4 md:w-1/2 lg:w-2/5"
         showCloseButton={false}
@@ -73,7 +71,7 @@ const TermsAndConditionsModal = ({
         main={
           <section
             // Motivation: This is a dialog, so its content should be focusable
-            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+
             tabIndex={0}
             className="max-h-[60vh] overflow-y-auto p-4"
             aria-label={localize('com_ui_terms_and_conditions')}
@@ -89,18 +87,12 @@ const TermsAndConditionsModal = ({
         }
         buttons={
           <>
-            <button
-              onClick={handleDecline}
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-border-heavy bg-surface-secondary px-4 py-2 text-sm text-text-primary hover:bg-surface-active"
-            >
+            <Button variant="outline" onClick={handleDecline}>
               {localize('com_ui_decline')}
-            </button>
-            <button
-              onClick={handleAccept}
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-border-heavy bg-surface-secondary px-4 py-2 text-sm text-text-primary hover:bg-green-500 hover:text-white focus:bg-green-500 focus:text-white dark:hover:bg-green-600 dark:focus:bg-green-600"
-            >
+            </Button>
+            <Button variant="submit" onClick={handleAccept}>
               {localize('com_ui_accept')}
-            </button>
+            </Button>
           </>
         }
       />

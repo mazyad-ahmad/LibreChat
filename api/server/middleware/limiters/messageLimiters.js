@@ -1,17 +1,15 @@
-const Keyv = require('keyv');
 const rateLimit = require('express-rate-limit');
-const { RedisStore } = require('rate-limit-redis');
+const { ViolationTypes } = require('librechat-data-provider');
+const { limiterCache, removePorts, getRateLimitReset } = require('@librechat/api');
 const denyRequest = require('~/server/middleware/denyRequest');
-const { isEnabled } = require('~/server/utils');
-const keyvRedis = require('~/cache/keyvRedis');
 const { logViolation } = require('~/cache');
-const { logger } = require('~/config');
 
 const {
   MESSAGE_IP_MAX = 40,
   MESSAGE_IP_WINDOW = 1,
   MESSAGE_USER_MAX = 40,
   MESSAGE_USER_WINDOW = 1,
+  MESSAGE_VIOLATION_SCORE: score,
 } = process.env;
 
 const ipWindowMs = MESSAGE_IP_WINDOW * 60 * 1000;
@@ -32,15 +30,16 @@ const userWindowInMinutes = userWindowMs / 60000;
  */
 const createHandler = (ip = true) => {
   return async (req, res) => {
-    const type = 'message_limit';
+    const type = ViolationTypes.MESSAGE_LIMIT;
     const errorMessage = {
       type,
       max: ip ? ipMax : userMax,
       limiter: ip ? 'ip' : 'user',
       windowInMinutes: ip ? ipWindowInMinutes : userWindowInMinutes,
+      ...getRateLimitReset(req.rateLimit, ip ? ipWindowMs : userWindowMs),
     };
 
-    await logViolation(req, res, type, errorMessage);
+    await logViolation(req, res, type, errorMessage, score);
     return await denyRequest(req, res, errorMessage);
   };
 };
@@ -52,6 +51,8 @@ const ipLimiterOptions = {
   windowMs: ipWindowMs,
   max: ipMax,
   handler: createHandler(),
+  keyGenerator: removePorts,
+  store: limiterCache('message_ip_limiter'),
 };
 
 const userLimiterOptions = {
@@ -59,26 +60,10 @@ const userLimiterOptions = {
   max: userMax,
   handler: createHandler(false),
   keyGenerator: function (req) {
-    return req.user?.id; // Use the user ID or NULL if not available
+    return req.user?.id;
   },
+  store: limiterCache('message_user_limiter'),
 };
-
-if (isEnabled(process.env.USE_REDIS)) {
-  logger.debug('Using Redis for message rate limiters.');
-  const keyv = new Keyv({ store: keyvRedis });
-  const client = keyv.opts.store.redis;
-  const sendCommand = (...args) => client.call(...args);
-  const ipStore = new RedisStore({
-    sendCommand,
-    prefix: 'message_ip_limiter:',
-  });
-  const userStore = new RedisStore({
-    sendCommand,
-    prefix: 'message_user_limiter:',
-  });
-  ipLimiterOptions.store = ipStore;
-  userLimiterOptions.store = userStore;
-}
 
 /**
  * Message request rate limiter by IP
@@ -90,7 +75,45 @@ const messageIpLimiter = rateLimit(ipLimiterOptions);
  */
 const messageUserLimiter = rateLimit(userLimiterOptions);
 
+/**
+ * Event admission has its own API-principal bucket. The durable worker later
+ * consumes the normal message-user bucket when it executes the delivery, so
+ * sharing that limiter here would charge every event twice.
+ */
+let configuredAgentEventUserLimiter;
+const agentEventUserLimiter = (req, res, next) => {
+  if (configuredAgentEventUserLimiter == null) {
+    const max = Number(process.env.AGENT_EVENT_USER_MAX ?? 40);
+    const windowInMinutes = Number(process.env.AGENT_EVENT_USER_WINDOW ?? 1);
+    configuredAgentEventUserLimiter = rateLimit({
+      windowMs: windowInMinutes * 60 * 1000,
+      max,
+      handler: (limitedReq, limitedRes) => {
+        const { retryAfterSeconds } = getRateLimitReset(
+          limitedReq.rateLimit,
+          windowInMinutes * 60 * 1000,
+        );
+        limitedRes.set('Retry-After', String(retryAfterSeconds));
+        return limitedRes
+          .status(429)
+          .type('application/json')
+          .json({
+            error: {
+              code: 'agent_event_rate_limited',
+              message: 'Agent event admission rate limit exceeded.',
+              type: 'rate_limit_error',
+            },
+          });
+      },
+      keyGenerator: (limitedReq) => String(limitedReq.apiKeyId ?? limitedReq.user?.id),
+      store: limiterCache('agent_event_user_limiter'),
+    });
+  }
+  return configuredAgentEventUserLimiter(req, res, next);
+};
+
 module.exports = {
+  agentEventUserLimiter,
   messageIpLimiter,
   messageUserLimiter,
 };

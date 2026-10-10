@@ -1,10 +1,11 @@
 const path = require('path');
+const mongoose = require('mongoose');
+const { getBalanceConfig } = require('@librechat/api');
+const { User, Balance } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
+const { getAppConfig } = require('~/server/services/Config');
 const { askQuestion, silentExit } = require('./helpers');
-const { isEnabled } = require('~/server/utils/handleText');
-const User = require('~/models/User');
 const connect = require('./connect');
-const Balance = require('~/models/Balance');
 
 (async () => {
   await connect();
@@ -31,16 +32,10 @@ const Balance = require('~/models/Balance');
     // console.purple(`[DEBUG] Args Length: ${process.argv.length}`);
   }
 
-  if (!process.env.CHECK_BALANCE) {
-    console.red(
-      'Error: CHECK_BALANCE environment variable is not set! Configure it to use it: `CHECK_BALANCE=true`',
-    );
-    silentExit(1);
-  }
-  if (isEnabled(process.env.CHECK_BALANCE) === false) {
-    console.red(
-      'Error: CHECK_BALANCE environment variable is set to `false`! Please configure: `CHECK_BALANCE=true`',
-    );
+  const appConfig = await getAppConfig();
+  const balanceConfig = getBalanceConfig(appConfig);
+  if (!balanceConfig?.enabled) {
+    console.red('Error: Balance is not enabled. Use librechat.yaml to enable it');
     silentExit(1);
   }
 
@@ -65,7 +60,7 @@ const Balance = require('~/models/Balance');
     console.purple(`Found user: ${user.email}`);
   }
 
-  let balance = await Balance.findOne({ user: user._id }).lean();
+  let balance = await Balance.findOne({ user: user._id }).sort({ _id: 1 }).lean();
   if (!balance) {
     console.purple('User has no balance!');
   } else {
@@ -86,11 +81,17 @@ const Balance = require('~/models/Balance');
    */
   let result;
   try {
-    result = await Balance.findOneAndUpdate(
-      { user: user._id },
-      { tokenCredits: amount },
-      { upsert: true, new: true },
-    ).lean();
+    result =
+      (await Balance.findOneAndUpdate(
+        { user: user._id },
+        { tokenCredits: amount },
+        { new: true, sort: { _id: 1 } },
+      ).lean()) ??
+      (await Balance.findOneAndUpdate(
+        { _id: user._id },
+        { $set: { tokenCredits: amount }, $setOnInsert: { user: user._id } },
+        { upsert: true, new: true },
+      ).lean());
   } catch (error) {
     console.red('Error: ' + error.message);
     console.error(error);

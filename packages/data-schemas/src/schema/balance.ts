@@ -1,17 +1,8 @@
-import { Schema, Document, Types } from 'mongoose';
+import { Schema } from 'mongoose';
+import { BALANCE_REFILL_MODES, REFILL_INTERVAL_UNITS } from 'librechat-data-provider';
+import type * as t from '~/types';
 
-export interface IBalance extends Document {
-  user: Types.ObjectId;
-  tokenCredits: number;
-  // Automatic refill settings
-  autoRefillEnabled: boolean;
-  refillIntervalValue: number;
-  refillIntervalUnit: 'seconds' | 'minutes' | 'hours' | 'days' | 'weeks' | 'months';
-  lastRefill: Date;
-  refillAmount: number;
-}
-
-const balanceSchema = new Schema<IBalance>({
+const balanceSchema: Schema<t.IBalance> = new Schema<t.IBalance>({
   user: {
     type: Schema.Types.ObjectId,
     ref: 'User',
@@ -34,7 +25,7 @@ const balanceSchema = new Schema<IBalance>({
   },
   refillIntervalUnit: {
     type: String,
-    enum: ['seconds', 'minutes', 'hours', 'days', 'weeks', 'months'],
+    enum: REFILL_INTERVAL_UNITS,
     default: 'days',
   },
   lastRefill: {
@@ -45,6 +36,42 @@ const balanceSchema = new Schema<IBalance>({
   refillAmount: {
     type: Number,
     default: 0,
+  },
+  refillMode: {
+    type: String,
+    enum: BALANCE_REFILL_MODES,
+    default: 'add',
+  },
+  tenantId: {
+    type: String,
+    index: true,
+  },
+  /** Credits held by in-flight requests; released when each request settles, or pruned once expired */
+  reservations: {
+    type: [
+      {
+        _id: false,
+        id: { type: String, required: true },
+        amount: { type: Number, required: true },
+        expiresAt: { type: Date, required: true },
+      },
+    ],
+    default: undefined,
+    select: false,
+  },
+  reservedCredits: {
+    type: Number,
+    select: false,
+  },
+  pendingRefill: {
+    type: {
+      transactionId: { type: Schema.Types.ObjectId, required: true },
+      rawAmount: { type: Number, required: true },
+      context: { type: String, enum: ['autoRefill', 'balanceReset'] },
+    },
+    _id: false,
+    default: undefined,
+    select: false,
   },
 });
 

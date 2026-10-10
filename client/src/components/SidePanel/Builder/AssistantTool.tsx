@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
 import { useFormContext } from 'react-hook-form';
-import type { TPlugin } from 'librechat-data-provider';
 import { useUpdateUserPluginsMutation } from 'librechat-data-provider/react-query';
-import { OGDialog, OGDialogTrigger, Label } from '~/components/ui';
-import OGDialogTemplate from '~/components/ui/OGDialogTemplate';
-import { useToastContext } from '~/Providers';
-import { TrashIcon } from '~/components/svg';
+import {
+  OGDialog,
+  OGDialogTrigger,
+  Label,
+  OGDialogTemplate,
+  TrashIcon,
+  useToastContext,
+} from '@librechat/client';
+import type { TPlugin } from 'librechat-data-provider';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -61,7 +65,7 @@ export default function AssistantTool({
           {currentTool.icon && (
             <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full">
               <div
-                className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-center bg-no-repeat dark:bg-white/20"
+                className="bg-surface-tertiary flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-center bg-no-repeat"
                 style={{ backgroundImage: `url(${currentTool.icon})`, backgroundSize: 'cover' }}
               />
             </div>
@@ -78,7 +82,7 @@ export default function AssistantTool({
           <OGDialogTrigger asChild>
             <button
               type="button"
-              className="flex h-9 w-9 min-w-9 items-center justify-center rounded-lg transition-colors duration-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+              className="hover:bg-surface-hover flex h-9 w-9 min-w-9 items-center justify-center rounded-lg transition-colors duration-200"
             >
               <TrashIcon />
             </button>
@@ -88,7 +92,7 @@ export default function AssistantTool({
       <OGDialogTemplate
         showCloseButton={false}
         title={localize('com_ui_delete_tool')}
-        className="max-w-[450px]"
+        className="max-w-[28.125rem]"
         main={
           <Label className="text-left text-sm font-medium">
             {localize('com_ui_delete_tool_confirm')}
@@ -97,7 +101,7 @@ export default function AssistantTool({
         selection={{
           selectHandler: () => removeTool(currentTool.pluginKey),
           selectClasses:
-            'bg-red-700 dark:bg-red-600 hover:bg-red-800 dark:hover:bg-red-800 transition-colors duration-200 text-white',
+            'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-text-on-status',
           selectText: localize('com_ui_delete'),
         }}
       />

@@ -1,14 +1,32 @@
 const fs = require('fs').promises;
+const { logger } = require('@librechat/data-schemas');
+const {
+  inspectContent,
+  extractFileContent,
+  hasActiveFileFieldPolicy,
+  contentFilterBlockResponse,
+  contentFilterUninspectableResponse,
+  getBlockedUninspectableFileField,
+  resolveAssistantToolPermissions,
+} = require('@librechat/api');
 const { FileContext } = require('librechat-data-provider');
+const {
+  deleteFileByFilter,
+  updateAssistantDoc,
+  getAssistants,
+  getRoleByName,
+} = require('~/models');
 const { uploadImageBuffer, filterFile } = require('~/server/services/Files/process');
 const validateAuthor = require('~/server/middleware/assistants/validateAuthor');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { deleteAssistantActions } = require('~/server/services/ActionService');
-const { updateAssistantDoc, getAssistants } = require('~/models/Assistant');
 const { getOpenAIClient, fetchAssistants } = require('./helpers');
-const { manifestToolMap } = require('~/app/clients/tools');
-const { deleteFileByFilter } = require('~/models/File');
-const { logger } = require('~/config');
+const {
+  healMcpToolNames,
+  getAssistantToolDefinitions,
+  toProviderToolDefinition,
+} = require('~/server/services/MCP');
+const { manifestToolMap, isAgentsOnlyTool } = require('~/app/clients/tools');
 
 /**
  * Create an assistant.
@@ -30,27 +48,60 @@ const createAssistant = async (req, res) => {
     delete assistantData.conversation_starters;
     delete assistantData.append_current_datetime;
 
-    assistantData.tools = tools
+    const { toolDefinitions, accessibleServerNames } = await getAssistantToolDefinitions({
+      req,
+      res,
+      tools,
+    });
+    const healedTools = await healMcpToolNames({
+      req,
+      tools,
+      toolDefinitions,
+      accessibleServerNames,
+    });
+    const isNativeToolPermitted = await resolveAssistantToolPermissions({
+      req,
+      tools,
+      getRoleByName,
+    });
+
+    assistantData.tools = healedTools
       .map((tool) => {
+        /** Agents-runtime-only tools (e.g. ask_user_question) cannot execute on
+         *  the assistants runtime — drop them even when posted directly, since
+         *  the tools-dialog scoping doesn't gate REST clients or stale payloads. */
+        if (isAgentsOnlyTool(tool)) {
+          logger.warn('[/assistants] Dropping agents-only tool from assistant payload', {
+            toolShape: typeof tool === 'string' ? 'name' : 'definition',
+          });
+          return undefined;
+        }
         if (typeof tool !== 'string') {
           return tool;
         }
 
-        const toolDefinitions = req.app.locals.availableTools;
         const toolDef = toolDefinitions[tool];
         if (!toolDef && manifestToolMap[tool] && manifestToolMap[tool].toolkit === true) {
-          return (
-            Object.entries(toolDefinitions)
-              .filter(([key]) => key.startsWith(`${tool}_`))
-              // eslint-disable-next-line no-unused-vars
-              .map(([_, val]) => val)
-          );
+          return Object.entries(toolDefinitions)
+            .filter(([key]) => key.startsWith(`${tool}_`))
+
+            .map(([_, val]) => val);
         }
 
         return toolDef;
       })
       .filter((tool) => tool)
-      .flat();
+      .flat()
+      .map(toProviderToolDefinition)
+      .filter((tool) => {
+        if (isNativeToolPermitted(tool)) {
+          return true;
+        }
+        logger.warn(
+          `[/assistants] Dropping role-denied native tool from assistant payload: ${tool?.type}`,
+        );
+        return false;
+      });
 
     let azureModelIdentifier = null;
     if (openai.locals?.azureOptions) {
@@ -65,7 +116,7 @@ const createAssistant = async (req, res) => {
 
     const assistant = await openai.beta.assistants.create(assistantData);
 
-    const createData = { user: req.user.id };
+    const createData = { user: req.user.id, endpoint };
     if (conversation_starters) {
       createData.conversation_starters = conversation_starters;
     }
@@ -73,7 +124,7 @@ const createAssistant = async (req, res) => {
       createData.append_current_datetime = append_current_datetime;
     }
 
-    const document = await updateAssistantDoc({ assistant_id: assistant.id }, createData);
+    const document = await updateAssistantDoc({ assistantId: assistant.id }, createData);
 
     if (azureModelIdentifier) {
       assistant.model = azureModelIdentifier;
@@ -87,7 +138,11 @@ const createAssistant = async (req, res) => {
       assistant.append_current_datetime = append_current_datetime;
     }
 
-    logger.debug('/assistants/', assistant);
+    logger.debug('[/assistants] Assistant created', {
+      assistantId: assistant.id,
+      toolCount: assistantData.tools.length,
+      hasConversationStarters: Array.isArray(document.conversation_starters),
+    });
     res.status(201).json(assistant);
   } catch (error) {
     logger.error('[/assistants] Error creating assistant', error);
@@ -135,27 +190,61 @@ const patchAssistant = async (req, res) => {
       append_current_datetime,
       ...updateData
     } = req.body;
-    updateData.tools = (updateData.tools ?? [])
+
+    const { toolDefinitions, accessibleServerNames } = await getAssistantToolDefinitions({
+      req,
+      res,
+      tools: updateData.tools,
+    });
+    const healedTools = await healMcpToolNames({
+      req,
+      tools: updateData.tools,
+      toolDefinitions,
+      accessibleServerNames,
+    });
+    const isNativeToolPermitted = await resolveAssistantToolPermissions({
+      req,
+      tools: updateData.tools,
+      getRoleByName,
+    });
+
+    updateData.tools = healedTools
       .map((tool) => {
+        /** Agents-runtime-only tools (e.g. ask_user_question) cannot execute on
+         *  the assistants runtime — drop them even when posted directly, since
+         *  the tools-dialog scoping doesn't gate REST clients or stale payloads. */
+        if (isAgentsOnlyTool(tool)) {
+          logger.warn(
+            `[/assistants] Dropping agents-only tool from assistant payload: ${typeof tool === 'string' ? tool : tool?.function?.name}`,
+          );
+          return undefined;
+        }
         if (typeof tool !== 'string') {
           return tool;
         }
 
-        const toolDefinitions = req.app.locals.availableTools;
         const toolDef = toolDefinitions[tool];
         if (!toolDef && manifestToolMap[tool] && manifestToolMap[tool].toolkit === true) {
-          return (
-            Object.entries(toolDefinitions)
-              .filter(([key]) => key.startsWith(`${tool}_`))
-              // eslint-disable-next-line no-unused-vars
-              .map(([_, val]) => val)
-          );
+          return Object.entries(toolDefinitions)
+            .filter(([key]) => key.startsWith(`${tool}_`))
+
+            .map(([_, val]) => val);
         }
 
         return toolDef;
       })
       .filter((tool) => tool)
-      .flat();
+      .flat()
+      .map(toProviderToolDefinition)
+      .filter((tool) => {
+        if (isNativeToolPermitted(tool)) {
+          return true;
+        }
+        logger.warn(
+          `[/assistants] Dropping role-denied native tool from assistant payload: ${tool?.type}`,
+        );
+        return false;
+      });
 
     if (openai.locals?.azureOptions && updateData.model) {
       updateData.model = openai.locals.azureOptions.azureOpenAIApiDeploymentName;
@@ -165,14 +254,14 @@ const patchAssistant = async (req, res) => {
 
     if (conversation_starters !== undefined) {
       const conversationStartersUpdate = await updateAssistantDoc(
-        { assistant_id },
+        { assistantId: assistant_id },
         { conversation_starters },
       );
       updatedAssistant.conversation_starters = conversationStartersUpdate.conversation_starters;
     }
 
     if (append_current_datetime !== undefined) {
-      await updateAssistantDoc({ assistant_id }, { append_current_datetime });
+      await updateAssistantDoc({ assistantId: assistant_id }, { append_current_datetime });
       updatedAssistant.append_current_datetime = append_current_datetime;
     }
 
@@ -197,7 +286,7 @@ const deleteAssistant = async (req, res) => {
     await validateAuthor({ req, openai });
 
     const assistant_id = req.params.id;
-    const deletionStatus = await openai.beta.assistants.del(assistant_id);
+    const deletionStatus = await openai.beta.assistants.delete(assistant_id);
     if (deletionStatus?.deleted) {
       await deleteAssistantActions({ req, assistant_id });
     }
@@ -258,8 +347,9 @@ function filterAssistantDocs({ documents, userId, assistantsConfig = {} }) {
  */
 const getAssistantDocuments = async (req, res) => {
   try {
-    const endpoint = req.query;
-    const assistantsConfig = req.app.locals[endpoint];
+    const appConfig = req.config;
+    const endpoint = req.query?.endpoint;
+    const assistantsConfig = appConfig.endpoints?.[endpoint];
     const documents = await getAssistants(
       {},
       {
@@ -296,8 +386,23 @@ const getAssistantDocuments = async (req, res) => {
  */
 const uploadAssistantAvatar = async (req, res) => {
   try {
+    const appConfig = req.config;
     filterFile({ req, file: req.file, image: true, isAvatar: true });
+    if (hasActiveFileFieldPolicy(req.config?.filters, ['name', 'content'])) {
+      const finding = inspectContent(extractFileContent({ name: req.file.originalname }), {
+        filters: req.config.filters,
+      });
+      if (finding != null) {
+        return res.status(400).json(contentFilterBlockResponse(finding));
+      }
+      const uninspectableField = getBlockedUninspectableFileField(req.config.filters, ['content']);
+      if (uninspectableField != null) {
+        return res.status(400).json(contentFilterUninspectableResponse(uninspectableField));
+      }
+    }
+
     const { assistant_id } = req.params;
+    const endpoint = req.body?.endpoint ?? req.query?.endpoint;
     if (!assistant_id) {
       return res.status(400).json({ message: 'Assistant ID is required' });
     }
@@ -327,7 +432,11 @@ const uploadAssistantAvatar = async (req, res) => {
     if (_metadata.avatar && _metadata.avatar_source) {
       const { deleteFile } = getStrategyFunctions(_metadata.avatar_source);
       try {
-        await deleteFile(req, { filepath: _metadata.avatar });
+        await deleteFile(req, {
+          filepath: _metadata.avatar,
+          user: req.user.id,
+          tenantId: req.user.tenantId,
+        });
         await deleteFileByFilter({ user: req.user.id, filepath: _metadata.avatar });
       } catch (error) {
         logger.error('[/:assistant_id/avatar] Error deleting old avatar', error);
@@ -337,19 +446,20 @@ const uploadAssistantAvatar = async (req, res) => {
     const metadata = {
       ..._metadata,
       avatar: image.filepath,
-      avatar_source: req.app.locals.fileStrategy,
+      avatar_source: appConfig.fileStrategy,
     };
 
     const promises = [];
     promises.push(
       updateAssistantDoc(
-        { assistant_id },
+        { assistantId: assistant_id },
         {
           avatar: {
             filepath: image.filepath,
-            source: req.app.locals.fileStrategy,
+            source: appConfig.fileStrategy,
           },
           user: req.user.id,
+          endpoint,
         },
       ),
     );
@@ -365,7 +475,7 @@ const uploadAssistantAvatar = async (req, res) => {
     try {
       await fs.unlink(req.file.path);
       logger.debug('[/:agent_id/avatar] Temp. image upload file deleted');
-    } catch (error) {
+    } catch {
       logger.debug('[/:agent_id/avatar] Temp. image upload file already deleted');
     }
   }

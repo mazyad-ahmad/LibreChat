@@ -1,16 +1,21 @@
 const path = require('path');
 const { v4 } = require('uuid');
+const { countTokens, announceReply, isAnnounceableReply } = require('@librechat/api');
+const { escapeRegExp } = require('@librechat/data-schemas');
 const {
   Constants,
   ContentTypes,
   AnnotationTypes,
   defaultOrderQuery,
 } = require('librechat-data-provider');
+const {
+  saveConvo,
+  getMessages,
+  spendTokens,
+  saveMessage,
+  stampConvoLastResponse,
+} = require('~/models');
 const { retrieveAndProcessFile } = require('~/server/services/Files/process');
-const { recordMessage, getMessages } = require('~/models/Message');
-const { countTokens, escapeRegExp } = require('~/server/utils');
-const { spendTokens } = require('~/models/spendTokens');
-const { saveConvo } = require('~/models/Conversation');
 
 /**
  * Initializes a new thread or adds messages to an existing thread.
@@ -62,24 +67,6 @@ async function initThread({ openai, body, thread_id: _thread_id }) {
 async function saveUserMessage(req, params) {
   const tokenCount = await countTokens(params.text);
 
-  // todo: do this on the frontend
-  // const { file_ids = [] } = params;
-  // let content;
-  // if (file_ids.length) {
-  //   content = [
-  //     {
-  //       value: params.text,
-  //     },
-  //     ...(
-  //       file_ids
-  //         .filter(f => f)
-  //         .map((file_id) => ({
-  //           file_id,
-  //         }))
-  //     ),
-  //   ];
-  // }
-
   const userMessage = {
     user: params.user,
     endpoint: params.endpoint,
@@ -95,6 +82,9 @@ async function saveUserMessage(req, params) {
     tokenCount,
   };
 
+  // Only confirmed new conversations seed membership; saveConvo applies it on insert.
+  const chatProjectId =
+    req?.resolvedConversation === null ? req.chatProjectContext?.projectId : undefined;
   const convo = {
     endpoint: params.endpoint,
     conversationId: params.conversationId,
@@ -102,17 +92,31 @@ async function saveUserMessage(req, params) {
     instructions: params.instructions,
     assistant_id: params.assistant_id,
     model: params.model,
+    ...(typeof chatProjectId === 'string' && chatProjectId ? { chatProjectId } : {}),
   };
-
   if (params.files?.length) {
     userMessage.files = params.files.map(({ file_id }) => ({ file_id }));
     convo.file_ids = params.file_ids;
   }
 
-  const message = await recordMessage(userMessage);
-  await saveConvo(req, convo, {
-    context: 'api/server/services/Threads/manage.js #saveUserMessage',
-  });
+  const ctx = {
+    userId: req?.user?.id,
+    isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+    expiredAt: req?.resolvedConversation?.expiredAt,
+    interfaceConfig: req?.config?.interfaceConfig,
+  };
+  const message = await saveMessage(ctx, userMessage);
+  const savedConvo = await saveConvo(
+    { ...ctx, expiredAt: message?.expiredAt ?? ctx.expiredAt },
+    convo,
+    {
+      context: 'api/server/services/Threads/manage.js #saveUserMessage',
+      ...(message?._id != null ? { appendMessageIds: [message._id] } : {}),
+    },
+  );
+  if (savedConvo != null) {
+    req.resolvedConversation = savedConvo;
+  }
   return message;
 }
 
@@ -132,14 +136,24 @@ async function saveUserMessage(req, params) {
  * @param {string} params.endpoint - The conversation endpoint
  * @param {string} params.parentMessageId - The latest user message that triggered this response.
  * @param {string} [params.instructions] - Optional: from preset for `instructions` field.
+ * @param {string} [params.spec] - Optional: Model spec identifier.
+ * @param {string} [params.iconURL]
+ * @param {import('librechat-data-provider').TAttachment[]} [params.attachments]
  * Overrides the instructions of the assistant.
  * @param {string} [params.promptPrefix] - Optional: from preset for `additional_instructions` field.
- * @return {Promise<Run>} A promise that resolves to the created run object.
+ * @return {Promise<{message: Object|null, conversation: Object|null}>} The persisted assistant
+ * message and the conversation snapshot settled by the same write.
  */
 async function saveAssistantMessage(req, params) {
   // const tokenCount = // TODO: need to count each content part
 
-  const message = await recordMessage({
+  const ctx = {
+    userId: req?.user?.id,
+    isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+    expiredAt: req?.resolvedConversation?.expiredAt,
+    interfaceConfig: req?.config?.interfaceConfig,
+  };
+  const message = await saveMessage(ctx, {
     user: params.user,
     endpoint: params.endpoint,
     messageId: params.messageId,
@@ -149,15 +163,25 @@ async function saveAssistantMessage(req, params) {
     /* For messages, use the assistant_id instead of model */
     model: params.assistant_id,
     content: params.content,
+    attachments: params.attachments,
     sender: 'Assistant',
     isCreatedByUser: false,
     text: params.text,
     unfinished: false,
     // tokenCount,
+    iconURL: params.iconURL,
+    spec: params.spec,
   });
 
-  await saveConvo(
-    req,
+  const announceable = isAnnounceableReply({
+    messageId: message?.messageId,
+    content: params.content,
+    text: params.text,
+    isTemporary: ctx.isTemporary,
+  });
+
+  const savedConvo = await saveConvo(
+    { ...ctx, expiredAt: message?.expiredAt ?? ctx.expiredAt },
     {
       endpoint: params.endpoint,
       conversationId: params.conversationId,
@@ -165,11 +189,26 @@ async function saveAssistantMessage(req, params) {
       instructions: params.instructions,
       assistant_id: params.assistant_id,
       model: params.model,
+      iconURL: params.iconURL,
+      spec: params.spec,
     },
-    { context: 'api/server/services/Threads/manage.js #saveAssistantMessage' },
+    {
+      context: 'api/server/services/Threads/manage.js #saveAssistantMessage',
+      /** Judged by the same predicate every other persistence path asks, so an assistant row
+       *  that renders nothing cannot raise a dot here that opening the chat can never clear.
+       *  `saveConvo` assigns the timestamp past its own awaited reads, so a catch-up recorded
+       *  while one of them is in flight cannot outrank this reply. */
+      stampReply: announceable,
+      ...(announceable ? { replyMessageId: message.messageId } : {}),
+      ...(message?._id != null ? { appendMessageIds: [message._id] } : {}),
+    },
   );
 
-  return message;
+  if (savedConvo != null) {
+    req.resolvedConversation = savedConvo;
+  }
+
+  return { message, conversation: savedConvo };
 }
 
 /**
@@ -186,7 +225,8 @@ async function addThreadMetadata({ openai, thread_id, messageId, messages }) {
   const promises = [];
   for (const message of messages) {
     promises.push(
-      openai.beta.threads.messages.update(thread_id, message.id, {
+      openai.beta.threads.messages.update(message.id, {
+        thread_id,
         metadata: {
           messageId,
         },
@@ -228,6 +268,15 @@ async function syncMessages({
 
   const modifyPromises = [];
   const recordPromises = [];
+  const ctx = {
+    userId: openai.req?.user?.id,
+    isTemporary: openai.req?.resolvedConversation?.isTemporary ?? openai.req?.body?.isTemporary,
+    expiredAt: openai.req?.resolvedConversation?.expiredAt,
+    interfaceConfig: openai.req?.config?.interfaceConfig,
+  };
+  /** The assistant writes this synchronization performed. Their results decide whether a reply
+   *  is actually in the history: a write that resolved empty must not raise an indicator. */
+  const assistantRecordPromises = [];
 
   /**
    *
@@ -238,7 +287,11 @@ async function syncMessages({
    * @param {dbMessage} params.apiMessage
    */
   const processNewMessage = async ({ dbMessage, apiMessage }) => {
-    recordPromises.push(recordMessage({ ...dbMessage, user: openai.req.user.id }));
+    const recorded = saveMessage(ctx, { ...dbMessage, user: openai.req.user.id });
+    recordPromises.push(recorded);
+    if (dbMessage.role === 'assistant') {
+      assistantRecordPromises.push(recorded);
+    }
 
     if (!apiMessage.id.includes('msg_')) {
       return;
@@ -257,7 +310,8 @@ async function syncMessages({
     }
 
     modifyPromises.push(
-      openai.beta.threads.messages.update(thread_id, apiMessage.id, {
+      openai.beta.threads.messages.update(apiMessage.id, {
+        thread_id,
         metadata: {
           messageId: dbMessage.messageId,
         },
@@ -342,15 +396,39 @@ async function syncMessages({
   }, []);
 
   await Promise.all(modifyPromises);
+  const recordedAssistantReplies = await Promise.all(assistantRecordPromises);
   await Promise.all(recordPromises);
 
-  await saveConvo(
-    openai.req,
+  const savedConvo = await saveConvo(
+    ctx,
     {
       conversationId,
       file_ids: attached_file_ids,
     },
     { context: 'api/server/services/Threads/manage.js #syncMessages' },
+  );
+  if (savedConvo != null) {
+    openai.req.resolvedConversation = savedConvo;
+  }
+
+  /* Every caller that reaches here recovers assistant output the normal save path never wrote:
+     a cancelled run, or one that errored after the model had already produced content. The
+     `saveConvo` above carries no reply stamp, so without this the recovered reply would never
+     raise its unseen indicator. Only a write that actually persisted counts, and it is
+     best-effort, since those messages are already durable.
+     A run cancelled before any output still persists the synthetic row `checkMessageGaps`
+     built, and the error handlers add their visible content to the returned object rather
+     than to that row: stamping it would raise a dot for a message that renders nothing, and
+     acknowledgement requires the stamped reply to be on screen. */
+  const persistedAssistantReply = recordedAssistantReplies.findLast((message) => message != null);
+  await announceReply(
+    { stampConvoLastResponse },
+    {
+      userId: openai.req.user.id,
+      conversationId,
+      reply: { ...persistedAssistantReply, isTemporary: ctx.isTemporary },
+      context: 'syncMessages',
+    },
   );
 
   return result;
@@ -407,7 +485,7 @@ async function checkMessageGaps({
 }) {
   const promises = [];
   promises.push(openai.beta.threads.messages.list(thread_id, defaultOrderQuery));
-  promises.push(openai.beta.threads.runs.steps.list(thread_id, run_id));
+  promises.push(openai.beta.threads.runs.steps.list(run_id, { thread_id }));
   /** @type {[{ data: ThreadMessage[] }, { data: RunStep[] }]} */
   const [response, stepsResponse] = await Promise.all(promises);
 
@@ -464,7 +542,7 @@ async function checkMessageGaps({
     apiMessages.push(currentMessage);
   }
 
-  const dbMessages = await getMessages({ conversationId });
+  const dbMessages = await getMessages({ conversationId, user: openai.req.user.id });
   const assistant_id = dbMessages?.[0]?.model;
 
   const syncedMessages = await syncMessages({
@@ -494,7 +572,8 @@ async function checkMessageGaps({
  * @param {string} params.user - The user's ID.
  * @param {string} params.conversationId - LibreChat conversation ID.
  * @param {string} [params.context='message'] - The context of the usage. Defaults to 'message'.
- * @return {Promise<TMessage[]>} A promise that resolves to the updated messages
+ * @param {AppConfig['transactions']} [params.transactions] - Resolved transactions config.
+ * @return {Promise<void>}
  */
 const recordUsage = async ({
   prompt_tokens,
@@ -503,6 +582,7 @@ const recordUsage = async ({
   user,
   conversationId,
   context = 'message',
+  transactions,
 }) => {
   await spendTokens(
     {
@@ -510,6 +590,7 @@ const recordUsage = async ({
       model,
       context,
       conversationId,
+      transactions,
     },
     { promptTokens: prompt_tokens, completionTokens: completion_tokens },
   );
@@ -517,6 +598,18 @@ const recordUsage = async ({
 
 const uniqueCitationStart = '^====||===';
 const uniqueCitationEnd = '==|||||^';
+const adjacentCitationRegex = new RegExp(
+  `${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(
+    uniqueCitationEnd,
+  )}(\\s*)${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)}`,
+  'g',
+);
+const remainingAdjacentRegex = new RegExp(
+  `(${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)})\\s*\\1+`,
+  'g',
+);
+const citationStartRegex = new RegExp(escapeRegExp(uniqueCitationStart), 'g');
+const citationEndRegex = new RegExp(escapeRegExp(uniqueCitationEnd), 'g');
 
 /**
  * Sorts, processes, and flattens messages to a single string.
@@ -642,12 +735,6 @@ async function processMessages({ openai, client, messages = [] }) {
   await Promise.all(fileRetrievalPromises);
 
   // Handle adjacent identical citations with the unique format
-  const adjacentCitationRegex = new RegExp(
-    `${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(
-      uniqueCitationEnd,
-    )}(\\s*)${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)}`,
-    'g',
-  );
   text = text.replace(adjacentCitationRegex, (match, num1, space, num2) => {
     return num1 === num2
       ? `${uniqueCitationStart}${num1}${uniqueCitationEnd}`
@@ -655,15 +742,11 @@ async function processMessages({ openai, client, messages = [] }) {
   });
 
   // Remove any remaining adjacent identical citations
-  const remainingAdjacentRegex = new RegExp(
-    `(${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)})\\s*\\1+`,
-    'g',
-  );
   text = text.replace(remainingAdjacentRegex, '$1');
 
   // Replace the unique citation format with the final format
-  text = text.replace(new RegExp(escapeRegExp(uniqueCitationStart), 'g'), '^');
-  text = text.replace(new RegExp(escapeRegExp(uniqueCitationEnd), 'g'), '^');
+  text = text.replace(citationStartRegex, '^');
+  text = text.replace(citationEndRegex, '^');
 
   if (sources.size) {
     text += '\n\n';

@@ -1,60 +1,103 @@
-import { useRef } from 'react';
+import { Suspense, useRef } from 'react';
+import { Spinner } from '@librechat/client';
 import * as Tabs from '@radix-ui/react-tabs';
-import type { SandpackPreviewRef, CodeEditorRef } from '@codesandbox/sandpack-react';
-import type { Artifact } from '~/common';
-import useArtifactProps from '~/hooks/Artifacts/useArtifactProps';
-import { useAutoScroll } from '~/hooks/Artifacts/useAutoScroll';
+import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
+import type { editor } from 'monaco-editor';
+import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
+import { MermaidRenderer } from '~/components/Messages/Content/Mermaid/Mermaid';
+import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
+import { useArtifactCode } from '~/Providers/EditorContext';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
-import { ArtifactPreview } from './ArtifactPreview';
-import { cn } from '~/utils';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
+import { useLocalize } from '~/hooks';
 
-export default function ArtifactTabs({
-  artifact,
-  isMermaid,
-  editorRef,
-  previewRef,
-  isSubmitting,
-}: {
+const SandboxArtifactTabs = lazyWithRecovery(() => import('./SandboxArtifactTabs'));
+
+interface ArtifactTabsProps {
   artifact: Artifact;
-  isMermaid: boolean;
-  isSubmitting: boolean;
-  editorRef: React.MutableRefObject<CodeEditorRef>;
   previewRef: React.MutableRefObject<SandpackPreviewRef>;
-}) {
-  const content = artifact.content ?? '';
-  const contentRef = useRef<HTMLDivElement>(null);
-  useAutoScroll({ ref: contentRef, content, isSubmitting });
-  const { files, fileKey, template, sharedProps } = useArtifactProps({ artifact });
+  isSharedConvo?: boolean;
+  onMermaidExportReady?: (data: ProcessedMermaidSvg | null) => void;
+}
+
+function LoadingArtifactTabs() {
+  const localize = useLocalize();
+
   return (
-    <>
+    <div
+      className="bg-surface-primary text-text-secondary flex h-full w-full items-center justify-center"
+      role="status"
+    >
+      <Spinner className="size-5" aria-hidden="true" />
+      <span className="sr-only">{localize('com_ui_loading')}</span>
+    </div>
+  );
+}
+
+function MermaidArtifactTabs({
+  artifact,
+  isSharedConvo,
+  onMermaidExportReady,
+}: Omit<ArtifactTabsProps, 'previewRef'>) {
+  const localize = useLocalize();
+  const editedCode = useArtifactCode(artifact.id);
+  const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+
+  /* The buffer belongs to whichever artifact last wrote it: a freshly keyed
+   * renderer must not show (or export) the diagram we navigated away from,
+   * while a pane that remounted for another host keeps its unsaved text and a
+   * displaced copy is just as much this artifact's own. */
+  const content = editedCode ?? artifact.content ?? '';
+  const isReadOnly = isSharedConvo === true || artifact.index == null;
+
+  return (
+    <div className="flex h-full w-full flex-col">
       <Tabs.Content
-        ref={contentRef}
         value="code"
         id="artifacts-code"
-        className={cn('flex-grow overflow-auto')}
+        className="h-full w-full grow overflow-auto"
+        tabIndex={-1}
       >
-        <ArtifactCodeEditor
-          files={files}
-          fileKey={fileKey}
-          template={template}
-          artifact={artifact}
-          editorRef={editorRef}
-          sharedProps={sharedProps}
-          isSubmitting={isSubmitting}
-        />
+        <ArtifactCodeEditor artifact={artifact} monacoRef={monacoRef} readOnly={isReadOnly} />
       </Tabs.Content>
+
       <Tabs.Content
         value="preview"
-        className={cn('flex-grow overflow-auto', isMermaid ? 'bg-[#282C34]' : 'bg-white')}
+        className="min-h-0 w-full flex-1 overflow-hidden p-4"
+        tabIndex={-1}
       >
-        <ArtifactPreview
-          files={files}
-          fileKey={fileKey}
-          template={template}
-          previewRef={previewRef}
-          sharedProps={sharedProps}
-        />
+        {/* Keyed by artifact so switching between two diagrams cannot carry the
+            previous render, its dimensions, or its export payload across the
+            boundary while the new source debounces. */}
+        <MermaidRenderer
+          key={artifact.id}
+          exportFilename={artifact.title ?? localize('com_ui_mermaid_diagram')}
+          fillContainer
+          onExportReady={onMermaidExportReady}
+          showExpandButton={false}
+          showHeader={false}
+        >
+          {content}
+        </MermaidRenderer>
       </Tabs.Content>
-    </>
+    </div>
+  );
+}
+
+export default function ArtifactTabs(props: ArtifactTabsProps) {
+  if (props.artifact.type === MERMAID_ARTIFACT_TYPE) {
+    return (
+      <MermaidArtifactTabs
+        artifact={props.artifact}
+        isSharedConvo={props.isSharedConvo}
+        onMermaidExportReady={props.onMermaidExportReady}
+      />
+    );
+  }
+
+  return (
+    <Suspense fallback={<LoadingArtifactTabs />}>
+      <SandboxArtifactTabs {...props} />
+    </Suspense>
   );
 }

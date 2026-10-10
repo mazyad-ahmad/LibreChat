@@ -1,38 +1,6 @@
-import { Schema, Document } from 'mongoose';
-import { SystemRoles } from 'librechat-data-provider';
-
-export interface IUser extends Document {
-  name?: string;
-  username?: string;
-  email: string;
-  emailVerified: boolean;
-  password?: string;
-  avatar?: string;
-  provider: string;
-  role?: string;
-  googleId?: string;
-  facebookId?: string;
-  openidId?: string;
-  ldapId?: string;
-  githubId?: string;
-  discordId?: string;
-  appleId?: string;
-  plugins?: unknown[];
-  twoFactorEnabled?: boolean;
-  totpSecret?: string;
-  backupCodes?: Array<{
-    codeHash: string;
-    used: boolean;
-    usedAt?: Date | null;
-  }>;
-  refreshToken?: Array<{
-    refreshToken: string;
-  }>;
-  expiresAt?: Date;
-  termsAccepted?: boolean;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
+import { Schema } from 'mongoose';
+import { SystemRoles, STATEFUL_CODE_ENVIRONMENTS } from 'librechat-data-provider';
+import { IUser } from '~/types';
 
 // Session sub-schema
 const SessionSchema = new Schema(
@@ -55,7 +23,7 @@ const BackupCodeSchema = new Schema(
   { _id: false },
 );
 
-const User = new Schema<IUser>(
+const userSchema: Schema<IUser> = new Schema<IUser>(
   {
     name: {
       type: String,
@@ -67,9 +35,8 @@ const User = new Schema<IUser>(
     },
     email: {
       type: String,
-      required: [true, 'can\'t be blank'],
+      required: [true, "can't be blank"],
       lowercase: true,
-      unique: true,
       match: [/\S+@\S+\.\S+/, 'is invalid'],
       index: true,
     },
@@ -78,11 +45,17 @@ const User = new Schema<IUser>(
       required: true,
       default: false,
     },
+    /** Set when a confirmed email change commits; password resets use it to refuse
+     * address-less legacy tokens that a mixed-version deployment could still mint. */
+    emailChangedAt: {
+      type: Date,
+    },
     password: {
       type: String,
       trim: true,
       minlength: 8,
       maxlength: 128,
+      select: false,
     },
     avatar: {
       type: String,
@@ -99,38 +72,30 @@ const User = new Schema<IUser>(
     },
     googleId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     facebookId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     openidId: {
       type: String,
-      unique: true,
-      sparse: true,
+    },
+    openidIssuer: {
+      type: String,
+    },
+    samlId: {
+      type: String,
     },
     ldapId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     githubId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     discordId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     appleId: {
       type: String,
-      unique: true,
-      sparse: true,
     },
     plugins: {
       type: Array,
@@ -139,11 +104,44 @@ const User = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    twoFactorEnrolledAt: {
+      type: Date,
+      default: null,
+    },
     totpSecret: {
       type: String,
+      select: false,
     },
     backupCodes: {
       type: [BackupCodeSchema],
+      select: false,
+    },
+    pendingTotpSecret: {
+      type: String,
+      select: false,
+    },
+    pendingBackupCodes: {
+      type: [BackupCodeSchema],
+      select: false,
+      default: undefined,
+    },
+    /**
+     * Instant of the last credential change (password reset). Access tokens issued
+     * before it are rejected at JWT verification, so a token that outlives the reset
+     * cannot keep authenticating.
+     */
+    credentialsChangedAt: {
+      type: Date,
+    },
+    twoFactorAcknowledgementNonceHash: {
+      type: String,
+      select: false,
+      default: null,
+    },
+    twoFactorFinalizationNonceHash: {
+      type: String,
+      select: false,
+      default: null,
     },
     refreshToken: {
       type: [SessionSchema],
@@ -156,8 +154,116 @@ const User = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    termsAcceptedAt: {
+      type: Date,
+      default: null,
+    },
+    agentTriggerDeletionStartedAt: {
+      type: Date,
+      select: false,
+    },
+    subagentAdmissionFences: {
+      type: [
+        {
+          token: { type: String, required: true },
+          expiresAt: { type: Date, required: true },
+        },
+      ],
+      _id: false,
+      select: false,
+      default: undefined,
+    },
+    personalization: {
+      type: {
+        memories: {
+          type: Boolean,
+          default: true,
+        },
+        statefulCodeEnvironment: {
+          type: String,
+          enum: STATEFUL_CODE_ENVIRONMENTS,
+          default: 'user',
+        },
+      },
+      default: {},
+    },
+    favorites: {
+      type: [
+        {
+          _id: false,
+          agentId: { type: String, maxlength: 256 },
+          model: { type: String, maxlength: 256 },
+          endpoint: { type: String, maxlength: 256 },
+          spec: { type: String, maxlength: 256 },
+        },
+      ],
+      default: [],
+    },
+    /** Display order for the sidebar's Pinned section: favorite and pinned-chat
+     *  entry keys interleaved (`agent:`, `spec:`, `model:`, `convo:` prefixes).
+     *  Keys whose item no longer exists are ignored; unlisted items keep their
+     *  natural order after the listed ones. */
+    pinnedOrder: {
+      type: [String],
+      default: [],
+      /** Display-only, and allowed to grow large. Every authentication request
+       *  loads the user document, so leaving this selected would put hundreds
+       *  of kilobytes on paths that never read it. The pinned-order handler
+       *  asks for it explicitly with `+pinnedOrder`. */
+      select: false,
+    },
+    skillStates: {
+      type: Map,
+      of: Boolean,
+      default: () => new Map(),
+    },
+    /** Field for external source identification (for consistency with TPrincipal schema) */
+    idOnTheSource: {
+      type: String,
+      sparse: true,
+    },
+    tenantId: {
+      type: String,
+      index: true,
+    },
   },
   { timestamps: true },
 );
 
-export default User;
+userSchema.index({ email: 1, tenantId: 1 }, { unique: true });
+userSchema.index({ role: 1, tenantId: 1 });
+userSchema.index({ idOnTheSource: 1, openidIssuer: 1, tenantId: 1 });
+/* Tenant first: the popular sort's only predicates are the caller's tenant and
+   `favorites.agentId: { $exists: true }`, and a multikey existence field in the leading
+   position cannot seek into one tenant, so the count would scan favourites across all of
+   them. The rare cleanup that pulls a deleted agent from every user names the tenant too;
+   the one that does not (`$in` over a batch of ids) is a maintenance write, not a page. */
+userSchema.index({ tenantId: 1, 'favorites.agentId': 1 });
+
+const oAuthIdFields = [
+  'googleId',
+  'facebookId',
+  'openidId',
+  'samlId',
+  'ldapId',
+  'githubId',
+  'discordId',
+  'appleId',
+] as const;
+
+for (const field of oAuthIdFields) {
+  if (field === 'openidId') {
+    userSchema.index(
+      { openidId: 1, openidIssuer: 1, tenantId: 1 },
+      { unique: true, partialFilterExpression: { openidId: { $exists: true } } },
+    );
+    continue;
+  }
+
+  userSchema.index(
+    { [field]: 1, tenantId: 1 },
+    { unique: true, partialFilterExpression: { [field]: { $exists: true } } },
+  );
+}
+
+export default userSchema;

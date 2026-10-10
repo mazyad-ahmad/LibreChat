@@ -1,22 +1,14 @@
-import { TranslationKeys, useLocalize } from '~/hooks';
-import { BlinkAnimation } from './BlinkAnimation';
+import { ThemeSelector } from '@librechat/client';
 import { TStartupConfig } from 'librechat-data-provider';
+import { ErrorMessage } from '~/components/Auth/ErrorMessage';
+import { hasPublishedPolicies } from '~/utils/policies';
+import { TranslationKeys, useLocalize } from '~/hooks';
 import SocialLoginRender from './SocialLoginRender';
-import { ThemeSelector } from '~/components/ui';
+import { BlinkAnimation } from './BlinkAnimation';
+import LegalConsent from './LegalConsent';
 import { Banner } from '../Banners';
 import Footer from './Footer';
-
-const ErrorRender = ({ children }: { children: React.ReactNode }) => (
-  <div className="mt-16 flex justify-center">
-    <div
-      role="alert"
-      aria-live="assertive"
-      className="rounded-md border border-red-500 bg-red-500/10 px-3 py-2 text-sm text-gray-600 dark:text-gray-200"
-    >
-      {children}
-    </div>
-  </div>
-);
+import { cn } from '~/utils';
 
 function AuthLayout({
   children,
@@ -38,32 +30,70 @@ function AuthLayout({
   const localize = useLocalize();
 
   const hasStartupConfigError = startupConfigError !== null && startupConfigError !== undefined;
+  const isRegister = pathname.includes('register');
+  const isLogin = !pathname.includes('2fa') && pathname.includes('login');
+  const showsSocialLogin = isLogin || isRegister;
+  /** Both ways in state it, rather than the layout guessing which of them can
+   *  create an account. That guess is not available here: account creation
+   *  also happens on a first provider sign-in, on a first LDAP sign-in through
+   *  the ordinary form, and is gated server-side by ALLOW_SOCIAL_REGISTRATION,
+   *  which the startup payload does not carry. The sentence is about
+   *  continuing, which is what both screens do, and it names the same policies
+   *  the footer bar linked, so a screen states them once. */
+  const hasPolicies = hasPublishedPolicies(startupConfig);
+  /** Registration states it under its own submit button, where it is read
+   *  before the account is created rather than below however many provider
+   *  buttons a deployment configured, and it renders that form only once the
+   *  config has loaded without error. The login screen has no submit button of
+   *  its own to sit under, so there the layout states it below the providers,
+   *  for as long as it knows the policies: a background refetch must not swap
+   *  the sentence for the bar and back. */
+  const registrationStatesConsent =
+    isRegister && hasPolicies && !hasStartupConfigError && !isFetching;
+  const statesConsentBelowProviders = isLogin && hasPolicies;
+  /** The bar is dropped exactly when the sentence is on the screen, so a
+   *  reader never meets both and never meets neither. */
+  const statesConsent = registrationStatesConsent || statesConsentBelowProviders;
+  const isTwoFactorSetup = pathname === '/login/2fa/setup';
   const DisplayError = () => {
     if (hasStartupConfigError) {
-      return <ErrorRender>{localize('com_auth_error_login_server')}</ErrorRender>;
+      return (
+        <div className="mx-auto sm:max-w-sm">
+          <ErrorMessage>{localize('com_auth_error_login_server')}</ErrorMessage>
+        </div>
+      );
     } else if (error === 'com_auth_error_invalid_reset_token') {
       return (
-        <ErrorRender>
-          {localize('com_auth_error_invalid_reset_token')}{' '}
-          <a className="font-semibold text-green-600 hover:underline" href="/forgot-password">
-            {localize('com_auth_click_here')}
-          </a>{' '}
-          {localize('com_auth_to_try_again')}
-        </ErrorRender>
+        <div className="mx-auto sm:max-w-sm">
+          <ErrorMessage>
+            {localize('com_auth_error_invalid_reset_token')}{' '}
+            <a
+              className="text-accent-primary font-semibold hover:underline"
+              href="/forgot-password"
+            >
+              {localize('com_auth_click_here')}
+            </a>{' '}
+            {localize('com_auth_to_try_again')}
+          </ErrorMessage>
+        </div>
       );
     } else if (error != null && error) {
-      return <ErrorRender>{localize(error)}</ErrorRender>;
+      return (
+        <div className="mx-auto sm:max-w-sm">
+          <ErrorMessage>{localize(error)}</ErrorMessage>
+        </div>
+      );
     }
     return null;
   };
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-white dark:bg-gray-900">
+    <div className="bg-surface-primary relative flex min-h-screen flex-col">
       <Banner />
       <BlinkAnimation active={isFetching}>
         <div className="mt-6 h-10 w-full bg-cover">
           <img
-            src="/assets/logo.svg"
+            src="assets/logo.svg"
             className="h-full w-full object-contain"
             alt={localize('com_ui_logo', { 0: startupConfig?.appTitle ?? 'LibreChat' })}
           />
@@ -74,24 +104,29 @@ function AuthLayout({
         <ThemeSelector />
       </div>
 
-      <div className="flex flex-grow items-center justify-center">
-        <div className="w-authPageWidth overflow-hidden bg-white px-6 py-4 dark:bg-gray-900 sm:max-w-md sm:rounded-lg">
-          {!hasStartupConfigError && !isFetching && (
+      <main className="flex grow items-center justify-center">
+        <div
+          className={cn(
+            'bg-surface-primary overflow-hidden px-6 py-4 sm:rounded-lg',
+            isTwoFactorSetup ? 'w-11/12 max-w-lg' : 'w-authPageWidth sm:max-w-md',
+          )}
+        >
+          {!hasStartupConfigError && !isFetching && header && (
             <h1
-              className="mb-4 text-center text-3xl font-semibold text-black dark:text-white"
+              className="text-text-primary mb-4 text-center text-3xl font-semibold"
               style={{ userSelect: 'none' }}
             >
               {header}
             </h1>
           )}
           {children}
-          {!pathname.includes('2fa') &&
-            (pathname.includes('login') || pathname.includes('register')) && (
-            <SocialLoginRender startupConfig={startupConfig} />
+          {showsSocialLogin && (
+            <SocialLoginRender startupConfig={startupConfig} showPasskey={isLogin} />
           )}
+          {statesConsentBelowProviders && <LegalConsent startupConfig={startupConfig} />}
         </div>
-      </div>
-      <Footer startupConfig={startupConfig} />
+      </main>
+      {!statesConsent && <Footer startupConfig={startupConfig} />}
     </div>
   );
 }

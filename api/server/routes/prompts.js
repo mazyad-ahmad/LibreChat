@@ -1,246 +1,117 @@
 const express = require('express');
-const { PermissionTypes, Permissions, SystemRoles } = require('librechat-data-provider');
 const {
-  getPrompt,
-  getPrompts,
-  savePrompt,
-  deletePrompt,
-  getPromptGroup,
-  getPromptGroups,
-  updatePromptGroup,
-  deletePromptGroup,
-  createPromptGroup,
-  getAllPromptGroups,
-  // updatePromptLabels,
-  makePromptProduction,
-} = require('~/models/Prompt');
-const { requireJwtAuth, generateCheckAccess } = require('~/server/middleware');
-const { logger } = require('~/config');
+  generateCheckAccess,
+  createPromptService,
+  createPromptHandlers,
+  invalidateLinkedPrompt,
+} = require('@librechat/api');
+const {
+  CacheKeys,
+  Permissions,
+  PermissionBits,
+  PermissionTypes,
+} = require('librechat-data-provider');
+const {
+  canAccessPromptGroupResource,
+  canAccessPromptViaGroup,
+  promptUsageLimiter,
+  requireJwtAuth,
+  configMiddleware,
+} = require('~/server/middleware');
+const { getEffectivePermissions, grantPermission } = require('~/server/services/PermissionService');
+const { getLogStores } = require('~/cache');
+const db = require('~/models');
 
+const { getRoleByName } = db;
 const router = express.Router();
 
-const checkPromptAccess = generateCheckAccess(PermissionTypes.PROMPTS, [Permissions.USE]);
-const checkPromptCreate = generateCheckAccess(PermissionTypes.PROMPTS, [
-  Permissions.USE,
-  Permissions.CREATE,
-]);
+const linkedInstructionsCache = getLogStores(CacheKeys.AGENT_LINKED_INSTRUCTIONS);
 
-const checkGlobalPromptShare = generateCheckAccess(
-  PermissionTypes.PROMPTS,
-  [Permissions.USE, Permissions.CREATE],
-  {
-    [Permissions.SHARED_GLOBAL]: ['projectIds', 'removeProjectIds'],
-  },
-);
+const handlers = createPromptHandlers({
+  service: createPromptService({ db, grantPermission }),
+  getPromptGroupAccessContext: db.getPromptGroupAccessContext,
+  getEffectivePermissions,
+  invalidateLinkedPrompt: (groupId, promptIds) =>
+    invalidateLinkedPrompt(linkedInstructionsCache, groupId, promptIds),
+});
+
+const checkPromptAccess = generateCheckAccess({
+  permissionType: PermissionTypes.PROMPTS,
+  permissions: [Permissions.USE],
+  getRoleByName,
+});
+const checkPromptCreate = generateCheckAccess({
+  permissionType: PermissionTypes.PROMPTS,
+  permissions: [Permissions.USE, Permissions.CREATE],
+  getRoleByName,
+});
 
 router.use(requireJwtAuth);
 router.use(checkPromptAccess);
 
-/**
- * Route to get single prompt group by its ID
- * GET /groups/:groupId
- */
-router.get('/groups/:groupId', async (req, res) => {
-  let groupId = req.params.groupId;
-  const author = req.user.id;
+router.get(
+  '/groups/:groupId',
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.VIEW }),
+  configMiddleware,
+  handlers.getPromptGroup,
+);
+router.get('/all', configMiddleware, handlers.listAllPromptGroups);
+router.get('/groups', configMiddleware, handlers.listPromptGroups);
 
-  const query = {
-    _id: groupId,
-    $or: [{ projectIds: { $exists: true, $ne: [], $not: { $size: 0 } } }, { author }],
-  };
+router.post('/', checkPromptCreate, configMiddleware, handlers.createPromptGroup);
+router.post(
+  '/groups/:groupId/prompts',
+  checkPromptAccess,
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.EDIT }),
+  configMiddleware,
+  handlers.savePrompt,
+);
+router.post(
+  '/groups/:groupId/use',
+  promptUsageLimiter,
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.VIEW }),
+  handlers.recordPromptUsage,
+);
 
-  if (req.user.role === SystemRoles.ADMIN) {
-    delete query.$or;
-  }
+router.patch(
+  '/groups/:groupId',
+  checkPromptCreate,
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.EDIT }),
+  configMiddleware,
+  handlers.updatePromptGroup,
+);
+router.patch(
+  '/:promptId/tags/production',
+  checkPromptCreate,
+  canAccessPromptViaGroup({ requiredPermission: PermissionBits.EDIT, resourceIdParam: 'promptId' }),
+  configMiddleware,
+  handlers.makePromptProduction,
+);
 
-  try {
-    const group = await getPromptGroup(query);
+router.get(
+  '/:promptId',
+  canAccessPromptViaGroup({ requiredPermission: PermissionBits.VIEW, resourceIdParam: 'promptId' }),
+  configMiddleware,
+  handlers.getPrompt,
+);
+router.get('/', configMiddleware, handlers.getPrompts);
 
-    if (!group) {
-      return res.status(404).send({ message: 'Prompt group not found' });
-    }
-
-    res.status(200).send(group);
-  } catch (error) {
-    logger.error('Error getting prompt group', error);
-    res.status(500).send({ message: 'Error getting prompt group' });
-  }
-});
-
-/**
- * Route to fetch all prompt groups
- * GET /groups
- */
-router.get('/all', async (req, res) => {
-  try {
-    const groups = await getAllPromptGroups(req, {
-      author: req.user._id,
-    });
-    res.status(200).send(groups);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error getting prompt groups' });
-  }
-});
-
-/**
- * Route to fetch paginated prompt groups with filters
- * GET /groups
- */
-router.get('/groups', async (req, res) => {
-  try {
-    const filter = req.query;
-    /* Note: The aggregation requires an ObjectId */
-    filter.author = req.user._id;
-    const groups = await getPromptGroups(req, filter);
-    res.status(200).send(groups);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error getting prompt groups' });
-  }
-});
-
-/**
- * Updates or creates a prompt + promptGroup
- * @param {object} req
- * @param {TCreatePrompt} req.body
- * @param {Express.Response} res
- */
-const createPrompt = async (req, res) => {
-  try {
-    const { prompt, group } = req.body;
-    if (!prompt) {
-      return res.status(400).send({ error: 'Prompt is required' });
-    }
-
-    const saveData = {
-      prompt,
-      group,
-      author: req.user.id,
-      authorName: req.user.name,
-    };
-
-    /** @type {TCreatePromptResponse} */
-    let result;
-    if (group && group.name) {
-      result = await createPromptGroup(saveData);
-    } else {
-      result = await savePrompt(saveData);
-    }
-    res.status(200).send(result);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error saving prompt' });
-  }
-};
-
-router.post('/', checkPromptCreate, createPrompt);
-
-/**
- * Updates a prompt group
- * @param {object} req
- * @param {object} req.params - The request parameters
- * @param {string} req.params.groupId - The group ID
- * @param {TUpdatePromptGroupPayload} req.body - The request body
- * @param {Express.Response} res
- */
-const patchPromptGroup = async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const author = req.user.id;
-    const filter = { _id: groupId, author };
-    if (req.user.role === SystemRoles.ADMIN) {
-      delete filter.author;
-    }
-    const promptGroup = await updatePromptGroup(filter, req.body);
-    res.status(200).send(promptGroup);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error updating prompt group' });
-  }
-};
-
-router.patch('/groups/:groupId', checkGlobalPromptShare, patchPromptGroup);
-
-router.patch('/:promptId/tags/production', checkPromptCreate, async (req, res) => {
-  try {
-    const { promptId } = req.params;
-    const result = await makePromptProduction(promptId);
-    res.status(200).send(result);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error updating prompt production' });
-  }
-});
-
-router.get('/:promptId', async (req, res) => {
-  const { promptId } = req.params;
-  const author = req.user.id;
-  const query = { _id: promptId, author };
-  if (req.user.role === SystemRoles.ADMIN) {
-    delete query.author;
-  }
-  const prompt = await getPrompt(query);
-  res.status(200).send(prompt);
-});
-
-router.get('/', async (req, res) => {
-  try {
-    const author = req.user.id;
-    const { groupId } = req.query;
-    const query = { groupId, author };
-    if (req.user.role === SystemRoles.ADMIN) {
-      delete query.author;
-    }
-    const prompts = await getPrompts(query);
-    res.status(200).send(prompts);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error getting prompts' });
-  }
-});
-
-/**
- * Deletes a prompt
- *
- * @param {Express.Request} req - The request object.
- * @param {TDeletePromptVariables} req.params - The request parameters
- * @param {import('mongoose').ObjectId} req.params.promptId - The prompt ID
- * @param {Express.Response} res - The response object.
- * @return {TDeletePromptResponse} A promise that resolves when the prompt is deleted.
- */
-const deletePromptController = async (req, res) => {
-  try {
-    const { promptId } = req.params;
-    const { groupId } = req.query;
-    const author = req.user.id;
-    const query = { promptId, groupId, author, role: req.user.role };
-    const result = await deletePrompt(query);
-    res.status(200).send(result);
-  } catch (error) {
-    logger.error(error);
-    res.status(500).send({ error: 'Error deleting prompt' });
-  }
-};
-
-/**
- * Delete a prompt group
- * @param {ServerRequest} req
- * @param {ServerResponse} res
- * @returns {Promise<TDeletePromptGroupResponse>}
- */
-const deletePromptGroupController = async (req, res) => {
-  try {
-    const { groupId: _id } = req.params;
-    const message = await deletePromptGroup({ _id, author: req.user.id, role: req.user.role });
-    res.send(message);
-  } catch (error) {
-    logger.error('Error deleting prompt group', error);
-    res.status(500).send({ message: 'Error deleting prompt group' });
-  }
-};
-
-router.delete('/:promptId', checkPromptCreate, deletePromptController);
-router.delete('/groups/:groupId', checkPromptCreate, deletePromptGroupController);
+router.delete(
+  '/:promptId',
+  checkPromptCreate,
+  canAccessPromptViaGroup({
+    requiredPermission: PermissionBits.DELETE,
+    resourceIdParam: 'promptId',
+  }),
+  configMiddleware,
+  handlers.deletePrompt,
+);
+router.delete(
+  '/groups/:groupId',
+  checkPromptCreate,
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.DELETE }),
+  configMiddleware,
+  handlers.deletePromptGroup,
+);
 
 module.exports = router;

@@ -1,9 +1,32 @@
 const { v4 } = require('uuid');
+const { sleep } = require('@librechat/agents');
+const { logger } = require('@librechat/data-schemas');
+const {
+  sendEvent,
+  countTokens,
+  checkBalance,
+  createBalanceReservations,
+  getBalanceConfig,
+  getSafeErrorText,
+  getModelMaxTokens,
+  getTransactionsConfig,
+  ATTACHMENT_ONLY_TEXT,
+  isContentFilterError,
+  hasActiveFilePolicy,
+  preflightAssistantRunContent,
+  reportLocatorTraversalFailure,
+  preflightAssistantUserMessageContent,
+  settleAssistantFinal,
+  resolveAssistantProjectTurn,
+  joinChatProjectInstructions,
+  applyForcedTemporaryRequest,
+} = require('@librechat/api');
 const {
   Time,
   Constants,
   RunStatus,
   CacheKeys,
+  VisionModes,
   ContentTypes,
   EModelEndpoint,
   ViolationTypes,
@@ -19,20 +42,28 @@ const {
   addThreadMetadata,
   saveAssistantMessage,
 } = require('~/server/services/Threads');
-const { sendResponse, sendMessage, sleep, countTokens } = require('~/server/utils');
 const { runAssistant, createOnTextProgress } = require('~/server/services/AssistantService');
 const validateAuthor = require('~/server/middleware/assistants/validateAuthor');
 const { formatMessage, createVisionPrompt } = require('~/app/clients/prompts');
+const { encodeAndFormat } = require('~/server/services/Files/images/encode');
 const { createRun, StreamRunManager } = require('~/server/services/Runs');
 const { addTitle } = require('~/server/services/Endpoints/assistants');
 const { createRunBody } = require('~/server/services/createRunBody');
-const { getTransactions } = require('~/models/Transaction');
-const { checkBalance } = require('~/models/balanceMethods');
-const { getConvo } = require('~/models/Conversation');
-const getLogStores = require('~/cache/getLogStores');
-const { getModelMaxTokens } = require('~/utils');
+const { sendResponse } = require('~/server/middleware/error');
+const setHeaders = require('~/server/middleware/setHeaders');
+const {
+  releaseBalanceReservation,
+  renewBalanceReservation,
+  getTransactions,
+  reserveBalance,
+  getMultiplier,
+  getConvo,
+  getProjectFiles,
+  getFiles,
+  getChatProject,
+} = require('~/models');
+const { logViolation, getLogStores } = require('~/cache');
 const { getOpenAIClient } = require('./helpers');
-const { logger } = require('~/config');
 
 /**
  * @route POST /
@@ -44,7 +75,8 @@ const { logger } = require('~/config');
  * @returns {void}
  */
 const chatV1 = async (req, res) => {
-  logger.debug('[/assistants/chat/] req.body', req.body);
+  applyForcedTemporaryRequest(req);
+  const appConfig = req.config;
 
   const {
     text,
@@ -61,8 +93,15 @@ const chatV1 = async (req, res) => {
     parentMessageId: _parentId = Constants.NO_PARENT,
     clientTimestamp,
   } = req.body;
+  logger.debug('[/assistants/chat/] request', {
+    endpoint,
+    conversationId: convoId,
+    assistantId: assistant_id,
+    hasText: typeof text === 'string' && text.length > 0,
+    fileCount: Array.isArray(files) ? files.length : 0,
+  });
 
-  /** @type {OpenAIClient} */
+  /** @type {OpenAI} */
   let openai;
   /** @type {string|undefined} - the current thread id */
   let thread_id = _thread_id;
@@ -94,6 +133,8 @@ const chatV1 = async (req, res) => {
 
   /** @type {Run | undefined} - The completed run, undefined if incomplete */
   let completedRun;
+  let contentRejected = false;
+  const balanceReservations = createBalanceReservations();
 
   const handleError = async (error) => {
     const defaultErrorMessage =
@@ -119,7 +160,7 @@ const chatV1 = async (req, res) => {
     } else if (/Files.*are invalid/.test(error.message)) {
       const errorMessage = `Files are invalid, or may not have uploaded yet.${
         endpoint === EModelEndpoint.azureAssistants
-          ? ' If using Azure OpenAI, files are only available in the region of the assistant\'s model at the time of upload.'
+          ? " If using Azure OpenAI, files are only available in the region of the assistant's model at the time of upload."
           : ''
       }`;
       return sendResponse(req, res, messageData, errorMessage);
@@ -133,7 +174,7 @@ const chatV1 = async (req, res) => {
     } else if (error?.message?.includes(ViolationTypes.TOKEN_BALANCE)) {
       return sendResponse(req, res, messageData, error.message);
     } else {
-      logger.error('[/assistants/chat/]', error);
+      logger.error(`[/assistants/chat/] ${getSafeErrorText(error)}`);
     }
 
     if (!openai || !thread_id || !run_id) {
@@ -149,7 +190,7 @@ const chatV1 = async (req, res) => {
         return res.end();
       }
       await cache.delete(cacheKey);
-      const cancelledRun = await openai.beta.threads.runs.cancel(thread_id, run_id);
+      const cancelledRun = await openai.beta.threads.runs.cancel(run_id, { thread_id });
       logger.debug('[/assistants/chat/] Cancelled run:', cancelledRun);
     } catch (error) {
       logger.error('[/assistants/chat/] Error cancelling run', error);
@@ -159,12 +200,13 @@ const chatV1 = async (req, res) => {
 
     let run;
     try {
-      run = await openai.beta.threads.runs.retrieve(thread_id, run_id);
+      run = await openai.beta.threads.runs.retrieve(run_id, { thread_id });
       await recordUsage({
         ...run.usage,
         model: run.model,
         user: req.user.id,
         conversationId,
+        transactions: getTransactionsConfig(req.config),
       });
     } catch (error) {
       logger.error('[/assistants/chat/] Error fetching or processing run', error);
@@ -232,10 +274,29 @@ const chatV1 = async (req, res) => {
 
   try {
     res.on('close', async () => {
-      if (!completedRun) {
+      if (!completedRun && !contentRejected) {
         await handleError(new Error('Request closed'));
       }
     });
+    const projectTurn = await resolveAssistantProjectTurn(
+      {
+        userId: req.user.id,
+        tenantId: req.user.tenantId,
+        conversationId: convoId,
+        requestedProjectId: endpointOption?.chatProjectId ?? req.body?.chatProjectId,
+        resolvedConversation: req.resolvedConversation,
+        filters: req.config?.filters,
+      },
+      { getConvo, getChatProject, getProjectFiles },
+    );
+    if (projectTurn.rejection) {
+      contentRejected = true;
+      return res.status(projectTurn.rejection.status).json(projectTurn.rejection.body);
+    }
+    const existingConversation = projectTurn.conversation;
+    const projectInstructions = projectTurn.instructions;
+    req.resolvedConversation = existingConversation;
+    req.chatProjectContext = projectTurn.context;
 
     if (convoId && !_thread_id) {
       completedRun = true;
@@ -248,8 +309,8 @@ const chatV1 = async (req, res) => {
     }
 
     const checkBalanceBeforeRun = async () => {
-      const balance = req.app?.locals?.balance;
-      if (!balance?.enabled) {
+      const balanceConfig = getBalanceConfig(appConfig);
+      if (!balanceConfig?.enabled) {
         return;
       }
       const transactions =
@@ -263,43 +324,77 @@ const chatV1 = async (req, res) => {
         transactions.reduce((acc, curr) => acc + curr.rawAmount, 0),
       );
 
-      // TODO: make promptBuffer a config option; buffer for titles, needs buffer for system instructions
+      // TODO: make promptBuffer a config option; buffer for title generation.
       const promptBuffer = parentMessageId === Constants.NO_PARENT && !_thread_id ? 200 : 0;
       // 5 is added for labels
-      let promptTokens = (await countTokens(text + (promptPrefix ?? ''))) + 5;
-      promptTokens += totalPreviousTokens + promptBuffer;
+      const promptText = joinChatProjectInstructions(
+        `${text ?? ''}${promptPrefix ?? ''}`,
+        projectInstructions,
+      );
+      let promptTokens = totalPreviousTokens + (await countTokens(promptText)) + 5 + promptBuffer;
       // Count tokens up to the current context window
       promptTokens = Math.min(promptTokens, getModelMaxTokens(model));
 
-      await checkBalance({
-        req,
-        res,
-        txData: {
-          model,
-          user: req.user.id,
-          tokenType: 'prompt',
-          amount: promptTokens,
+      return await checkBalance(
+        {
+          req,
+          res,
+          txData: {
+            model,
+            user: req.user.id,
+            tokenType: 'prompt',
+            amount: promptTokens,
+          },
         },
-      });
+        {
+          getMultiplier,
+          reserveBalance,
+          renewBalanceReservation,
+          releaseBalanceReservation,
+          logViolation,
+          balanceConfig,
+        },
+      );
     };
 
-    const { openai: _openai, client } = await getOpenAIClient({
+    const { openai: _openai } = await getOpenAIClient({
       req,
       res,
       endpointOption,
-      initAppClient: true,
     });
 
     openai = _openai;
     await validateAuthor({ req, openai });
-
+    let persistedAssistant;
+    try {
+      persistedAssistant = await preflightAssistantRunContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
+        config: req.config,
+        openai,
+        user: req.user,
+        assistantId: assistant_id,
+        threadId: _thread_id,
+        getFiles,
+      });
+    } catch (error) {
+      if (!isContentFilterError(error)) {
+        throw error;
+      }
+      contentRejected = true;
+      return res.status(error.statusCode).json(error.body);
+    }
     if (previousMessages.length) {
       parentMessageId = previousMessages[previousMessages.length - 1].messageId;
     }
 
+    /**
+     * Threads rejects an empty message body, so an attachment-only turn sends
+     * a minimal note instead. The persisted message keeps its empty text.
+     */
+    const isAttachmentOnly = !text?.trim() && files.length > 0;
     let userMessage = {
       role: 'user',
-      content: text,
+      content: isAttachmentOnly ? ATTACHMENT_ONLY_TEXT : text,
       metadata: {
         messageId: userMessageId,
       },
@@ -318,7 +413,7 @@ const chatV1 = async (req, res) => {
     const getRequestFileIds = async () => {
       let thread_file_ids = [];
       if (convoId) {
-        const convo = await getConvo(req.user.id, convoId);
+        const convo = existingConversation;
         if (convo && convo.file_ids) {
           thread_file_ids = convo.file_ids;
         }
@@ -326,10 +421,23 @@ const chatV1 = async (req, res) => {
 
       file_ids = files.map(({ file_id }) => file_id);
       if (file_ids.length || thread_file_ids.length) {
-        userMessage.file_ids = file_ids;
         attachedFileIds = new Set([...file_ids, ...thread_file_ids]);
+        if (endpoint === EModelEndpoint.azureAssistants) {
+          userMessage.attachments = Array.from(attachedFileIds).map((file_id) => ({
+            file_id,
+            tools: [{ type: 'file_search' }],
+          }));
+        } else {
+          userMessage.file_ids = Array.from(attachedFileIds);
+        }
       }
     };
+    if (projectInstructions) {
+      body.additional_instructions = joinChatProjectInstructions(
+        body.additional_instructions,
+        projectInstructions,
+      );
+    }
 
     const addVisionPrompt = async () => {
       if (!endpointOption.attachments) {
@@ -342,7 +450,7 @@ const chatV1 = async (req, res) => {
         return;
       }
 
-      const assistant = await openai.beta.assistants.retrieve(assistant_id);
+      const assistant = persistedAssistant ?? (await openai.beta.assistants.retrieve(assistant_id));
       const visionToolIndex = assistant.tools.findIndex(
         (tool) => tool?.function && tool?.function?.name === ImageVisionTool.function.name,
       );
@@ -355,7 +463,15 @@ const chatV1 = async (req, res) => {
         role: 'user',
         content: '',
       };
-      const files = await client.addImageURLs(visionMessage, attachments);
+      const { files, image_urls } = await encodeAndFormat(
+        req,
+        attachments,
+        {
+          endpoint: EModelEndpoint.assistants,
+        },
+        VisionModes.generative,
+      );
+      visionMessage.image_urls = image_urls.length ? image_urls : undefined;
       if (!visionMessage.image_urls?.length) {
         return;
       }
@@ -379,18 +495,24 @@ const chatV1 = async (req, res) => {
         body.additional_instructions ? `${body.additional_instructions}\n` : ''
       }The user has uploaded ${imageCount} image${pluralized}.
       Use the \`${ImageVisionTool.function.name}\` tool to retrieve ${
-  plural ? '' : 'a '
-}detailed text description${pluralized} for ${plural ? 'each' : 'the'} image${pluralized}.`;
+        plural ? '' : 'a '
+      }detailed text description${pluralized} for ${plural ? 'each' : 'the'} image${pluralized}.`;
 
       return files;
     };
 
     /** @type {Promise<Run>|undefined} */
     let userMessagePromise;
+    const inspectFinalMessageFiles = hasActiveFilePolicy(req.config?.filters);
 
     const initializeThread = async () => {
-      /** @type {[ undefined | MongoFile[]]}*/
-      const [processedFiles] = await Promise.all([addVisionPrompt(), getRequestFileIds()]);
+      /** @type {undefined | MongoFile[]} */
+      let processedFiles;
+      if (inspectFinalMessageFiles) {
+        processedFiles = await addVisionPrompt();
+      } else {
+        [processedFiles] = await Promise.all([addVisionPrompt(), getRequestFileIds()]);
+      }
       // TODO: may allow multiple messages to be created beforehand in a future update
       const initThreadBody = {
         messages: [userMessage],
@@ -446,6 +568,7 @@ const chatV1 = async (req, res) => {
       /* asynchronous */
       userMessagePromise = saveUserMessage(req, { ...requestMessage, model });
 
+      const conversationProjectId = projectTurn.membershipProjectId;
       conversation = {
         conversationId,
         endpoint,
@@ -453,6 +576,7 @@ const chatV1 = async (req, res) => {
         instructions: instructions,
         assistant_id,
         // model,
+        ...(conversationProjectId !== undefined ? { chatProjectId: conversationProjectId } : {}),
       };
 
       if (file_ids.length) {
@@ -460,11 +584,30 @@ const chatV1 = async (req, res) => {
       }
     };
 
-    const promises = [initializeThread(), checkBalanceBeforeRun()];
+    if (inspectFinalMessageFiles) {
+      await getRequestFileIds();
+      try {
+        await preflightAssistantUserMessageContent({
+          onTraversalFailure: reportLocatorTraversalFailure,
+          config: req.config,
+          user: req.user,
+          message: userMessage,
+          getFiles,
+        });
+      } catch (error) {
+        if (!isContentFilterError(error)) {
+          throw error;
+        }
+        contentRejected = true;
+        return res.status(error.statusCode).json(error.body);
+      }
+    }
+
+    const promises = [initializeThread(), balanceReservations.track(checkBalanceBeforeRun())];
     await Promise.all(promises);
 
     const sendInitialResponse = () => {
-      sendMessage(res, {
+      sendEvent(res, {
         sync: true,
         conversationId,
         // messages: previousMessages,
@@ -549,6 +692,24 @@ const chatV1 = async (req, res) => {
       response = streamRunManager;
     };
 
+    try {
+      await preflightAssistantRunContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
+        config: req.config,
+        openai,
+        user: req.user,
+        assistantId: assistant_id,
+        threadId: thread_id,
+        getFiles,
+      });
+    } catch (error) {
+      if (!isContentFilterError(error)) {
+        throw error;
+      }
+      contentRejected = true;
+      return res.status(error.statusCode).json(error.body);
+    }
+    setHeaders(req, res, () => {});
     await processRun();
     logger.debug('[/assistants/chat/] response', {
       run: response.run,
@@ -561,7 +722,7 @@ const chatV1 = async (req, res) => {
     }
 
     if (response.run.status === RunStatus.IN_PROGRESS) {
-      processRun(true);
+      balanceReservations.holdUntil(processRun(true));
     }
 
     completedRun = response.run;
@@ -576,11 +737,21 @@ const chatV1 = async (req, res) => {
       thread_id,
       model: assistant_id,
       endpoint,
+      spec: endpointOption.spec,
+      iconURL: endpointOption.iconURL,
     };
 
-    sendMessage(res, {
+    if (userMessagePromise) {
+      await userMessagePromise;
+    }
+
+    const settledConversation = await settleAssistantFinal(() =>
+      saveAssistantMessage(req, { ...responseMessage, model }),
+    );
+
+    sendEvent(res, {
       final: true,
-      conversation,
+      conversation: { ...conversation, ...settledConversation },
       requestMessage: {
         parentMessageId,
         thread_id,
@@ -588,17 +759,11 @@ const chatV1 = async (req, res) => {
     });
     res.end();
 
-    if (userMessagePromise) {
-      await userMessagePromise;
-    }
-    await saveAssistantMessage(req, { ...responseMessage, model });
-
     if (parentMessageId === Constants.NO_PARENT && !_thread_id) {
       addTitle(req, {
         text,
         responseText: response.text,
         conversationId,
-        client,
       });
     }
 
@@ -611,13 +776,14 @@ const chatV1 = async (req, res) => {
 
     if (!response.run.usage) {
       await sleep(3000);
-      completedRun = await openai.beta.threads.runs.retrieve(thread_id, response.run.id);
+      completedRun = await openai.beta.threads.runs.retrieve(response.run.id, { thread_id });
       if (completedRun.usage) {
         await recordUsage({
           ...completedRun.usage,
           user: req.user.id,
           model: completedRun.model ?? model,
           conversationId,
+          transactions: getTransactionsConfig(req.config),
         });
       }
     } else {
@@ -626,10 +792,13 @@ const chatV1 = async (req, res) => {
         user: req.user.id,
         model: response.run.model ?? model,
         conversationId,
+        transactions: getTransactionsConfig(req.config),
       });
     }
   } catch (error) {
     await handleError(error);
+  } finally {
+    await balanceReservations.release();
   }
 };
 

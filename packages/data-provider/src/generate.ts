@@ -1,7 +1,7 @@
 import { z, ZodArray, ZodError, ZodIssueCode } from 'zod';
-import { tConversationSchema, googleSettings as google, openAISettings as openAI } from './schemas';
 import type { ZodIssue } from 'zod';
 import type { TConversation, TSetOption, TPreset } from './schemas';
+import { tConversationSchema, googleSettings as google, openAISettings as openAI } from './schemas';
 
 export type GoogleSettings = Partial<typeof google>;
 export type OpenAISettings = Partial<typeof google>;
@@ -97,6 +97,38 @@ export interface SettingRange {
   min: number;
   max: number;
   step?: number;
+  /**
+   * Inclusive floor for non-negative values. Use when `min` is a sentinel
+   * (Google thinkingBudget `-1` for auto) and positive values have a higher
+   * documented minimum.
+   */
+  positiveMin?: number;
+  /**
+   * Set when this range came from the selected model rather than the shared
+   * fallback. Only then is it safe to normalize a stored value against it: a
+   * model that does not use the parameter leaves the generic range in place,
+   * and clamping to that would discard a value set for another model.
+   */
+  modelSpecific?: boolean;
+}
+
+export function clampSettingRange(value: number, range: SettingRange): number {
+  if (range.positiveMin != null) {
+    /** The minimum carries its own meaning here (Google's -1 for automatic),
+     *  and the schema admits it outright, so it survives rather than being
+     *  lifted to the floor. It need not be negative to be the sentinel. */
+    if (value === range.min) {
+      return range.min;
+    }
+    /** Below the sentinel there is nothing admissible to lift to, so the value
+     *  resolves to it. Between the sentinel and the floor, the floor is the
+     *  nearest value the generated schema accepts. */
+    if (value < Math.max(range.min, 0)) {
+      return range.min;
+    }
+    return Math.min(Math.max(value, range.positiveMin), range.max);
+  }
+  return Math.min(Math.max(value, range.min), range.max);
 }
 
 export type SettingsConfiguration = SettingDefinition[];
@@ -118,10 +150,23 @@ export function generateDynamicSchema(settings: SettingsConfiguration) {
     } = setting;
 
     if (type === SettingTypes.Number) {
-      let schema = z.number();
+      let numberSchema = z.number();
       if (range) {
-        schema = schema.min(range.min);
-        schema = schema.max(range.max);
+        numberSchema = numberSchema.min(range.min);
+        numberSchema = numberSchema.max(range.max);
+      }
+      /** Widened deliberately: refine returns ZodEffects, not ZodNumber, and
+       *  the number-specific chaining is already done above. */
+      let schema: z.ZodTypeAny = numberSchema;
+      if (range?.positiveMin != null) {
+        /** Mirrors clampSettingRange so the generated schema and the clamp
+         *  agree: `min` only admits the sentinel, and any non-negative value
+         *  must clear the documented floor. */
+        const { positiveMin, min } = range;
+        schema = numberSchema.refine(
+          (value) => value === min || value >= positiveMin,
+          `Expected ${min} or a value of at least ${positiveMin}`,
+        );
       }
       if (typeof defaultValue === 'number') {
         schemaFields[key] = schema.default(defaultValue);
@@ -358,13 +403,17 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
         // continue;
       }
       setting.includeInput =
-        setting.type === SettingTypes.Number ? setting.includeInput ?? true : false; // Default to true if type is number
+        setting.type === SettingTypes.Number ? (setting.includeInput ?? true) : false; // Default to true if type is number
     }
 
     if (setting.component === ComponentTypes.Slider && setting.type === SettingTypes.Number) {
       if (setting.default === undefined && setting.range) {
-        // Set default to the middle of the range if unspecified
-        setting.default = Math.round((setting.range.min + setting.range.max) / 2);
+        /** The midpoint of the admissible interval, which a positive floor
+         *  narrows: the span between the sentinel and that floor holds no value
+         *  the generated schema accepts, so a midpoint taken across it would
+         *  fail the validation below. */
+        const floor = Math.max(setting.range.min, setting.range.positiveMin ?? setting.range.min);
+        setting.default = Math.round((floor + setting.range.max) / 2);
       }
     }
 
@@ -445,7 +494,8 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
 
     // Validate optionType and conversation schema
     if (setting.optionType !== OptionTypes.Custom) {
-      const conversationSchema = tConversationSchema.shape[setting.key as keyof TConversation];
+      const conversationSchema =
+        tConversationSchema.shape[setting.key as keyof Omit<TConversation, 'disableParams'>];
       if (!conversationSchema) {
         errors.push({
           code: ZodIssueCode.custom,
@@ -466,7 +516,11 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
     }
 
     /* Default value checks */
-    if (setting.type === SettingTypes.Number && isNaN(setting.default as number)) {
+    if (
+      setting.type === SettingTypes.Number &&
+      isNaN(setting.default as number) &&
+      setting.default != null
+    ) {
       errors.push({
         code: ZodIssueCode.custom,
         message: `Invalid default value for setting ${setting.key}. Must be a number.`,
@@ -474,7 +528,11 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
       });
     }
 
-    if (setting.type === SettingTypes.Boolean && typeof setting.default !== 'boolean') {
+    if (
+      setting.type === SettingTypes.Boolean &&
+      typeof setting.default !== 'boolean' &&
+      setting.default != null
+    ) {
       errors.push({
         code: ZodIssueCode.custom,
         message: `Invalid default value for setting ${setting.key}. Must be a boolean.`,
@@ -484,7 +542,8 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
 
     if (
       (setting.type === SettingTypes.String || setting.type === SettingTypes.Enum) &&
-      typeof setting.default !== 'string'
+      typeof setting.default !== 'string' &&
+      setting.default != null
     ) {
       errors.push({
         code: ZodIssueCode.custom,
@@ -518,6 +577,45 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
         message: `Invalid default value for setting ${setting.key}. Must be within the range [${setting.range.min}, ${setting.range.max}].`,
         path: ['default'],
       });
+    }
+
+    if (
+      setting.type === SettingTypes.Number &&
+      setting.range?.positiveMin != null &&
+      setting.range.positiveMin > setting.range.max
+    ) {
+      errors.push({
+        code: ZodIssueCode.custom,
+        message: `Invalid range for setting ${setting.key}. positiveMin (${setting.range.positiveMin}) cannot exceed max (${setting.range.max}).`,
+        path: ['range'],
+      });
+    }
+
+    if (
+      setting.type === SettingTypes.Number &&
+      setting.range?.positiveMin != null &&
+      typeof setting.default === 'number' &&
+      setting.default !== setting.range.min &&
+      setting.default < setting.range.positiveMin
+    ) {
+      errors.push({
+        code: ZodIssueCode.custom,
+        message: `Invalid default value for setting ${setting.key}. Must be ${setting.range.min} or at least ${setting.range.positiveMin}.`,
+        path: ['default'],
+      });
+    }
+
+    // Validate enumMappings
+    if (setting.enumMappings && setting.type === SettingTypes.Enum && setting.options) {
+      for (const option of setting.options) {
+        if (!(option in setting.enumMappings)) {
+          errors.push({
+            code: ZodIssueCode.custom,
+            message: `Missing enumMapping for option "${option}" in setting ${setting.key}.`,
+            path: ['enumMappings'],
+          });
+        }
+      }
     }
   }
 
@@ -591,7 +689,9 @@ export const generateGoogleSchema = (customGoogle: GoogleSettings) => {
         promptPrefix: obj.promptPrefix ?? null,
         examples: obj.examples ?? [{ input: { content: '' }, output: { content: '' } }],
         temperature: obj.temperature ?? defaults.temperature.default,
-        maxOutputTokens: obj.maxOutputTokens ?? defaults.maxOutputTokens.default,
+        maxOutputTokens:
+          obj.maxOutputTokens ??
+          defaults.maxOutputTokens.reset(obj.model ?? defaults.model.default),
         topP: obj.topP ?? defaults.topP.default,
         topK: obj.topK ?? defaults.topK.default,
         maxContextTokens: obj.maxContextTokens ?? undefined,

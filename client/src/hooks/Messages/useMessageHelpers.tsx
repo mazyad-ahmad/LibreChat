@@ -1,13 +1,25 @@
+import { useCallback, useMemo } from 'react';
 import throttle from 'lodash/throttle';
-import { useEffect, useRef, useCallback, useMemo } from 'react';
-import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
+import {
+  isAssistantsEndpoint,
+  isAgentsEndpoint,
+  isConfiguredSender,
+} from 'librechat-data-provider';
+import type { SearchResultData } from 'librechat-data-provider';
 import type { TMessageProps } from '~/common';
-import { useChatContext, useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
-import useCopyToClipboard from './useCopyToClipboard';
-import { getTextKey, logger } from '~/utils';
+import {
+  useCopyMessageToClipboard,
+  getMessageClipboardSource,
+  hasCopyableText,
+} from './useCopyToClipboard';
+import { useMessagesViewContext, useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
+import { useGetAddedConvo } from '~/hooks/Chat';
+import { logger } from '~/utils';
 
-export default function useMessageHelpers(props: TMessageProps) {
-  const latestText = useRef<string | number>('');
+export default function useMessageHelpers(
+  props: TMessageProps,
+  searchResults?: { [key: string]: SearchResultData },
+) {
   const { message, currentEditId, setCurrentEditId } = props;
 
   const {
@@ -16,50 +28,18 @@ export default function useMessageHelpers(props: TMessageProps) {
     regenerate,
     isSubmitting,
     conversation,
-    latestMessage,
     setAbortScroll,
     handleContinue,
-    setLatestMessage,
-  } = useChatContext();
-  const assistantMap = useAssistantsMapContext();
+    latestMessageId,
+  } = useMessagesViewContext();
   const agentsMap = useAgentsMapContext();
+  const assistantMap = useAssistantsMapContext();
 
-  const { text, content, children, messageId = null, isCreatedByUser } = message ?? {};
+  const getAddedConvo = useGetAddedConvo();
+
+  const { children, messageId = null, isCreatedByUser } = message ?? {};
   const edit = messageId === currentEditId;
   const isLast = children?.length === 0 || children?.length === undefined;
-
-  useEffect(() => {
-    const convoId = conversation?.conversationId;
-    if (convoId === Constants.NEW_CONVO) {
-      return;
-    }
-    if (!message) {
-      return;
-    }
-    if (!isLast) {
-      return;
-    }
-
-    const textKey = getTextKey(message, convoId);
-
-    // Check for text/conversation change
-    const logInfo = {
-      textKey,
-      'latestText.current': latestText.current,
-      messageId: message.messageId,
-      convoId,
-    };
-    if (
-      textKey !== latestText.current ||
-      (latestText.current && convoId !== latestText.current.split(Constants.COMMON_DIVIDER)[2])
-    ) {
-      logger.log('[useMessageHelpers] Setting latest message: ', logInfo);
-      latestText.current = textKey;
-      setLatestMessage({ ...message });
-    } else {
-      logger.log('No change in latest message', logInfo);
-    }
-  }, [isLast, message, setLatestMessage, conversation?.conversationId]);
 
   const enterEdit = useCallback(
     (cancel?: boolean) => setCurrentEditId && setCurrentEditId(cancel === true ? -1 : messageId),
@@ -110,10 +90,19 @@ export default function useMessageHelpers(props: TMessageProps) {
       return;
     }
 
-    regenerate(message);
+    regenerate(message, { addedConvo: getAddedConvo() });
   };
 
-  const copyToClipboard = useCopyToClipboard({ text, content });
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
+  const copyToClipboard = useCopyMessageToClipboard({
+    ...clipboardSource,
+    searchResults,
+  });
+
+  const getCanCopy = useCallback(
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
+  );
 
   return {
     ask,
@@ -122,12 +111,22 @@ export default function useMessageHelpers(props: TMessageProps) {
     index,
     isLast,
     assistant,
+    getCanCopy,
     enterEdit,
     conversation,
+    /** Whether the header's label is a configured sender, so it can withhold the model
+     *  it stands in for. */
+    hasConfiguredSender: isConfiguredSender({
+      sender: message?.sender,
+      endpoint: message?.endpoint ?? conversation?.endpoint,
+      endpointType: conversation?.endpointType,
+      model: message?.model ?? conversation?.model,
+      isCreatedByUser: message?.isCreatedByUser,
+    }),
     isSubmitting,
     handleScroll,
-    latestMessage,
     handleContinue,
+    latestMessageId,
     copyToClipboard,
     regenerateMessage,
   };

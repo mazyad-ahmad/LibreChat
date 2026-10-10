@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
+import { Label, HoverCard, SelectDropDown, HoverCardTrigger } from '@librechat/client';
 import type { Assistant, TPreset } from 'librechat-data-provider';
 import type { TModelSelectProps, Option } from '~/common';
 import {
@@ -9,7 +10,6 @@ import {
   mapAssistants,
   createDropdownSetter,
 } from '~/utils';
-import { Label, HoverCard, SelectDropDown, HoverCardTrigger } from '~/components/ui';
 import { useLocalize, useDebouncedInput, useAssistantListMap } from '~/hooks';
 import OptionHover from './OptionHover';
 import { ESide } from '~/common';
@@ -121,6 +121,7 @@ export default function Settings({ conversation, setOption, models, readonly }: 
         <div className="grid w-full items-center gap-2">
           <SelectDropDown
             value={model ?? ''}
+            title={localize('com_ui_model')}
             setValue={createDropdownSetter(setModel)}
             availableValues={modelOptions}
             disabled={readonly}
@@ -151,7 +152,9 @@ export default function Settings({ conversation, setOption, models, readonly }: 
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="promptPrefix" className="text-left text-sm font-medium">
             {localize('com_endpoint_prompt_prefix_assistants')}{' '}
-            <small className="opacity-40">({localize('com_endpoint_default_blank')})</small>
+            <small className="high-contrast:opacity-100 opacity-40">
+              ({localize('com_endpoint_default_blank')})
+            </small>
           </Label>
           <TextareaAutosize
             id="promptPrefix"
@@ -161,14 +164,16 @@ export default function Settings({ conversation, setOption, models, readonly }: 
             placeholder={localize('com_endpoint_prompt_prefix_assistants_placeholder')}
             className={cn(
               defaultTextProps,
-              'flex max-h-[240px] min-h-[80px] w-full resize-none px-3 py-2 ',
+              'flex max-h-[15rem] min-h-[5rem] w-full resize-none px-3 py-2',
             )}
           />
         </div>
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="instructions" className="text-left text-sm font-medium">
             {localize('com_endpoint_instructions_assistants')}{' '}
-            <small className="opacity-40">({localize('com_endpoint_default_blank')})</small>
+            <small className="high-contrast:opacity-100 opacity-40">
+              ({localize('com_endpoint_default_blank')})
+            </small>
           </Label>
           <TextareaAutosize
             id="instructions"
@@ -178,7 +183,7 @@ export default function Settings({ conversation, setOption, models, readonly }: 
             placeholder={localize('com_endpoint_instructions_assistants_placeholder')}
             className={cn(
               defaultTextProps,
-              'flex max-h-[240px] min-h-[80px] w-full resize-none px-3 py-2 ',
+              'flex max-h-[15rem] min-h-[5rem] w-full resize-none px-3 py-2',
             )}
           />
         </div>

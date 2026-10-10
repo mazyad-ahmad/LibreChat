@@ -1,10 +1,23 @@
 const fs = require('fs');
 const LdapStrategy = require('passport-ldapauth');
-const { SystemRoles } = require('librechat-data-provider');
-const { findUser, createUser, updateUser } = require('~/models/userMethods');
-const { countUsers } = require('~/models/userMethods');
-const { isEnabled } = require('~/server/utils');
-const logger = require('~/utils/logger');
+const { logger } = require('@librechat/data-schemas');
+const { ErrorTypes } = require('librechat-data-provider');
+const {
+  isEnabled,
+  findLdapUser,
+  getBalanceConfig,
+  provisionLdapUser,
+  isEmailDomainAllowed,
+  resolveAppConfigForUser,
+} = require('@librechat/api');
+const {
+  findUser,
+  updateUser,
+  countUsers,
+  findBalanceByUser,
+  createUserIfAbsent,
+} = require('~/models');
+const { getAppConfig } = require('~/server/services/Config');
 
 const {
   LDAP_URL,
@@ -23,7 +36,7 @@ const {
 
 // Check required environment variables
 if (!LDAP_URL || !LDAP_USER_SEARCH_BASE) {
-  return null;
+  module.exports = null;
 }
 
 const searchAttributes = [
@@ -89,8 +102,6 @@ const ldapLogin = new LdapStrategy(ldapOptions, async (userinfo, done) => {
     const ldapId =
       (LDAP_ID && userinfo[LDAP_ID]) || userinfo.uid || userinfo.sAMAccountName || userinfo.mail;
 
-    let user = await findUser({ ldapId });
-
     const fullNameAttributes = LDAP_FULL_NAME && LDAP_FULL_NAME.split(',');
     const fullName =
       fullNameAttributes && fullNameAttributes.length > 0
@@ -100,7 +111,8 @@ const ldapLogin = new LdapStrategy(ldapOptions, async (userinfo, done) => {
     const username =
       (LDAP_USERNAME && userinfo[LDAP_USERNAME]) || userinfo.givenName || userinfo.mail;
 
-    const mail = (LDAP_EMAIL && userinfo[LDAP_EMAIL]) || userinfo.mail || username + '@ldap.local';
+    let mail = (LDAP_EMAIL && userinfo[LDAP_EMAIL]) || userinfo.mail || username + '@ldap.local';
+    mail = Array.isArray(mail) ? mail[0] : mail;
 
     if (!userinfo.mail && !(LDAP_EMAIL && userinfo[LDAP_EMAIL])) {
       logger.warn(
@@ -113,30 +125,52 @@ const ldapLogin = new LdapStrategy(ldapOptions, async (userinfo, done) => {
       );
     }
 
-    if (!user) {
-      const isFirstRegisteredUser = (await countUsers()) === 0;
-      user = {
-        provider: 'ldap',
-        ldapId,
-        username,
-        email: mail,
-        emailVerified: true, // The ldap server administrator should verify the email
-        name: fullName,
-        role: isFirstRegisteredUser ? SystemRoles.ADMIN : SystemRoles.USER,
-      };
-      const userId = await createUser(user);
-      user._id = userId;
-    } else {
-      // Users registered in LDAP are assumed to have their user information managed in LDAP,
-      // so update the user information with the values registered in LDAP
-      user.provider = 'ldap';
-      user.ldapId = ldapId;
-      user.email = mail;
-      user.username = username;
-      user.name = fullName;
+    // Domain check before findUser for two-phase fast-fail (consistent with SAML/OpenID/social).
+    // This means cross-provider users from blocked domains get 'Email domain not allowed'
+    // instead of AUTH_FAILED — both deny access.
+    const baseConfig = await getAppConfig({ baseOnly: true });
+    if (!isEmailDomainAllowed(mail, baseConfig?.registration?.allowedDomains)) {
+      logger.error(
+        `[LDAP Strategy] Authentication blocked - email domain not allowed [Email: ${mail}]`,
+      );
+      return done(null, false, { message: 'Email domain not allowed' });
     }
 
-    user = await updateUser(user._id, user);
+    const found = await findLdapUser({ findUser, ldapId });
+    if (found.error) {
+      return done(null, false, { message: ErrorTypes.AUTH_FAILED });
+    }
+
+    const appConfig = found.user?.tenantId
+      ? await resolveAppConfigForUser(getAppConfig, found.user)
+      : baseConfig;
+
+    if (!isEmailDomainAllowed(mail, appConfig?.registration?.allowedDomains)) {
+      logger.error(
+        `[LDAP Strategy] Authentication blocked - email domain not allowed [Email: ${mail}]`,
+      );
+      return done(null, false, { message: 'Email domain not allowed' });
+    }
+
+    const provisioned = await provisionLdapUser({
+      user: found.user,
+      ldapId,
+      email: mail,
+      username,
+      name: fullName,
+      appConfig,
+      getBalanceConfig,
+      getAppConfig,
+      findUser,
+      countUsers,
+      createUserIfAbsent,
+      findBalanceByUser,
+    });
+    if (provisioned.error) {
+      return done(null, false, { message: provisioned.error });
+    }
+
+    const user = await updateUser(provisioned.user._id, provisioned.user);
     done(null, user);
   } catch (err) {
     logger.error('[ldapStrategy]', err);

@@ -1,76 +1,105 @@
-import { useState, useMemo } from 'react';
+import { useRef, useMemo, useCallback } from 'react';
 import { useDrop } from 'react-dnd';
-import { useRecoilValue } from 'recoil';
+import { useToastContext } from '@librechat/client';
 import { NativeTypes } from 'react-dnd-html5-backend';
-import { useQueryClient } from '@tanstack/react-query';
-import {
-  isAgentsEndpoint,
-  EModelEndpoint,
-  AgentCapabilities,
-  QueryKeys,
-} from 'librechat-data-provider';
-import type * as t from 'librechat-data-provider';
+import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { DropTargetMonitor } from 'react-dnd';
-import useFileHandling from './useFileHandling';
-import store from '~/store';
+import { useChatContext } from '~/Providers/ChatContext';
+import useFileUploadRouter from './useFileUploadRouter';
+import { useUploadModalContext } from '~/Providers';
+import useUploadOptions from './useUploadOptions';
+import useLocalize from '../useLocalize';
 
 export default function useDragHelpers() {
-  const queryClient = useQueryClient();
-  const { handleFiles } = useFileHandling();
-  const [showModal, setShowModal] = useState(false);
-  const [draggedFiles, setDraggedFiles] = useState<File[]>([]);
-  const conversation = useRecoilValue(store.conversationByIndex(0)) || undefined;
+  const { showToast } = useToastContext();
+  const localize = useLocalize();
+  const { conversation } = useChatContext();
 
-  const handleOptionSelect = (toolResource: string | undefined) => {
-    handleFiles(draggedFiles, toolResource);
-    setShowModal(false);
-    setDraggedFiles([]);
-  };
-
-  const isAgents = useMemo(
-    () => isAgentsEndpoint(conversation?.endpoint),
+  const isAssistants = useMemo(
+    () => isAssistantsEndpoint(conversation?.endpoint),
     [conversation?.endpoint],
+  );
+
+  const { getOptions, isConfigResolved, isUnifiedMode, uploadsDisabled } = useUploadOptions();
+  const routeFiles = useFileUploadRouter();
+  const { openModal } = useUploadModalContext();
+
+  /** Use refs to avoid re-creating the drop handler */
+  const conversationRef = useRef(conversation);
+  const getOptionsRef = useRef(getOptions);
+  const isConfigResolvedRef = useRef(isConfigResolved);
+  const isUnifiedModeRef = useRef(isUnifiedMode);
+  const uploadsDisabledRef = useRef(uploadsDisabled);
+  const routeFilesRef = useRef(routeFiles);
+  const openModalRef = useRef(openModal);
+  const isAssistantsRef = useRef(isAssistants);
+
+  conversationRef.current = conversation;
+  getOptionsRef.current = getOptions;
+  isConfigResolvedRef.current = isConfigResolved;
+  isUnifiedModeRef.current = isUnifiedMode;
+  uploadsDisabledRef.current = uploadsDisabled;
+  routeFilesRef.current = routeFiles;
+  openModalRef.current = openModal;
+  isAssistantsRef.current = isAssistants;
+
+  const handleDrop = useCallback(
+    (item: { files: File[] }) => {
+      /* Both answers come from the hook the attach menu and the paste path already use.
+       * Resolving the endpoint config here as well missed an agent's provider entry, so a
+       * named custom provider's rules applied to one flow and not the others. */
+      if (uploadsDisabledRef.current) {
+        showToast({ message: localize('com_ui_attach_error_disabled'), status: 'error' });
+        return;
+      }
+      /* Neither answer is safe before the config lands: offering the chooser sends an
+       * explicit destination on a unified deployment, and skipping it sends none on a
+       * legacy one, which the server refuses. Say so instead of guessing. */
+      if (!isConfigResolvedRef.current) {
+        showToast({ message: localize('com_ui_attach_error_pending'), status: 'warning' });
+        return;
+      }
+
+      /** Assistants do not use the upload-option flow */
+      if (isAssistantsRef.current) {
+        routeFilesRef.current(item.files);
+        return;
+      }
+
+      /* Unified mode decides the destination from the file itself, so a drop must not
+       * present the chooser the attach button no longer shows. Offering it here would let
+       * the same file be delivered differently depending on how it was added. */
+      if (isUnifiedModeRef.current) {
+        routeFilesRef.current(item.files);
+        return;
+      }
+
+      const options = getOptionsRef.current(item.files);
+      if (options.length === 0) {
+        showToast({ message: localize('com_error_files_unsupported'), status: 'error' });
+        return;
+      }
+      if (options.length === 1) {
+        routeFilesRef.current(item.files, options[0]);
+        return;
+      }
+      openModalRef.current(item.files);
+    },
+    [showToast, localize],
   );
 
   const [{ canDrop, isOver }, drop] = useDrop(
     () => ({
       accept: [NativeTypes.FILE],
-      drop(item: { files: File[] }) {
-        console.log('drop', item.files);
-        if (!isAgents) {
-          handleFiles(item.files);
-          return;
-        }
-
-        const endpointsConfig = queryClient.getQueryData<t.TEndpointsConfig>([QueryKeys.endpoints]);
-        const agentsConfig = endpointsConfig?.[EModelEndpoint.agents];
-        const codeEnabled =
-          agentsConfig?.capabilities?.includes(AgentCapabilities.execute_code) === true;
-        const fileSearchEnabled =
-          agentsConfig?.capabilities?.includes(AgentCapabilities.file_search) === true;
-        if (!codeEnabled && !fileSearchEnabled) {
-          handleFiles(item.files);
-          return;
-        }
-        setDraggedFiles(item.files);
-        setShowModal(true);
-      },
+      drop: handleDrop,
       canDrop: () => true,
       collect: (monitor: DropTargetMonitor) => ({
         isOver: monitor.isOver(),
         canDrop: monitor.canDrop(),
       }),
     }),
-    [],
+    [handleDrop],
   );
 
-  return {
-    canDrop,
-    isOver,
-    drop,
-    showModal,
-    setShowModal,
-    draggedFiles,
-    handleOptionSelect,
-  };
+  return { canDrop, isOver, drop };
 }

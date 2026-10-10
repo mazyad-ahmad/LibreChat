@@ -1,9 +1,27 @@
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import filenamify from 'filenamify';
-import { useEffect, useState } from 'react';
+import {
+  Input,
+  Label,
+  Button,
+  OGDialog,
+  Checkbox,
+  Dropdown,
+  OGDialogTemplate,
+} from '@librechat/client';
 import type { TConversation } from 'librechat-data-provider';
-import { OGDialog, Button, Input, Label, Checkbox, Dropdown } from '~/components/ui';
-import OGDialogTemplate from '~/components/ui/OGDialogTemplate';
 import { useLocalize, useExportConversation } from '~/hooks';
+import { normalizeExportFilename } from '~/utils';
+
+const TYPE_OPTIONS = [
+  { value: 'markdown', label: 'markdown (.md)' },
+  { value: 'text', label: 'text (.txt)' },
+  { value: 'json', label: 'json (.json)' },
+  { value: 'csv', label: 'csv (.csv)' },
+  { value: 'screenshot', label: 'screenshot (.png)' },
+];
+
+const DEFAULT_TYPE = 'markdown';
 
 export default function ExportModal({
   open,
@@ -21,19 +39,11 @@ export default function ExportModal({
   const localize = useLocalize();
 
   const [filename, setFileName] = useState('');
-  const [type, setType] = useState('Select a file type');
+  const [type, setType] = useState<string>(DEFAULT_TYPE);
 
   const [includeOptions, setIncludeOptions] = useState<boolean | 'indeterminate'>(true);
   const [exportBranches, setExportBranches] = useState<boolean | 'indeterminate'>(false);
   const [recursive, setRecursive] = useState<boolean | 'indeterminate'>(true);
-
-  const typeOptions = [
-    { value: 'screenshot', label: 'screenshot (.png)' },
-    { value: 'text', label: 'text (.txt)' },
-    { value: 'markdown', label: 'markdown (.md)' },
-    { value: 'json', label: 'json (.json)' },
-    { value: 'csv', label: 'csv (.csv)' },
-  ];
 
   useEffect(() => {
     if (!open && triggerRef && triggerRef.current) {
@@ -43,27 +53,26 @@ export default function ExportModal({
 
   useEffect(() => {
     setFileName(filenamify(String(conversation?.title ?? 'file')));
-    setType('screenshot');
+    setType(DEFAULT_TYPE);
     setIncludeOptions(true);
     setExportBranches(false);
     setRecursive(true);
   }, [conversation?.title, open]);
 
-  const _setType = (newType: string) => {
-    const exportBranchesSupport = newType === 'json' || newType === 'csv' || newType === 'webpage';
-    const exportOptionsSupport = newType !== 'csv' && newType !== 'screenshot';
-
-    setExportBranches(exportBranchesSupport);
-    setIncludeOptions(exportOptionsSupport);
+  const handleTypeChange = useCallback((newType: string) => {
+    const branches = newType === 'json' || newType === 'csv';
+    const options = newType !== 'csv' && newType !== 'screenshot';
+    setExportBranches(branches);
+    setIncludeOptions(options);
     setType(newType);
-  };
+  }, []);
 
-  const exportBranchesSupport = type === 'json' || type === 'csv' || type === 'webpage';
-  const exportOptionsSupport = type !== 'csv' && type !== 'screenshot';
+  const exportBranchesSupport = useMemo(() => type === 'json' || type === 'csv', [type]);
+  const exportOptionsSupport = useMemo(() => type !== 'csv' && type !== 'screenshot', [type]);
 
   const { exportConversation } = useExportConversation({
     conversation,
-    filename,
+    filename: normalizeExportFilename(filenamify(filename)),
     type,
     includeOptions,
     exportBranches,
@@ -86,7 +95,7 @@ export default function ExportModal({
                 <Input
                   id="filename"
                   value={filename}
-                  onChange={(e) => setFileName(filenamify(e.target.value || ''))}
+                  onChange={(e) => setFileName(e.target.value || '')}
                   placeholder={localize('com_nav_export_filename_placeholder')}
                 />
               </div>
@@ -94,7 +103,14 @@ export default function ExportModal({
                 <Label htmlFor="type" className="text-left text-sm font-medium">
                   {localize('com_nav_export_type')}
                 </Label>
-                <Dropdown value={type} onChange={_setType} options={typeOptions} portal={false} />
+                <Dropdown
+                  value={type}
+                  onChange={handleTypeChange}
+                  options={TYPE_OPTIONS}
+                  sizeClasses="z-50"
+                  className="z-50"
+                  portal={false}
+                />
               </div>
             </div>
             <div className="grid w-full gap-6 sm:grid-cols-2">
@@ -103,22 +119,23 @@ export default function ExportModal({
                   <Label htmlFor="includeOptions" className="text-left text-sm font-medium">
                     {localize('com_nav_export_include_endpoint_options')}
                   </Label>
-                  <div className="flex h-[40px] w-full items-center space-x-3">
+                  <div className="flex h-[2.5rem] w-full items-center space-x-3">
                     <Checkbox
                       id="includeOptions"
                       disabled={!exportOptionsSupport}
                       checked={includeOptions}
-                      className="focus:ring-opacity-20 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-50 dark:focus:ring-gray-600 dark:focus:ring-opacity-50 dark:focus:ring-offset-0"
                       onCheckedChange={setIncludeOptions}
+                      aria-labelledby="includeOptions-label"
                     />
-                    <label
+                    <Label
+                      id="includeOptions-label"
                       htmlFor="includeOptions"
-                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 dark:text-gray-50"
+                      className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                     >
                       {exportOptionsSupport
-                        ? localize('com_nav_enabled')
+                        ? localize('com_nav_export_include_endpoint_options')
                         : localize('com_nav_not_supported')}
-                    </label>
+                    </Label>
                   </div>
                 </div>
               </div>
@@ -126,22 +143,23 @@ export default function ExportModal({
                 <Label htmlFor="exportBranches" className="text-left text-sm font-medium">
                   {localize('com_nav_export_all_message_branches')}
                 </Label>
-                <div className="flex h-[40px] w-full items-center space-x-3">
+                <div className="flex h-[2.5rem] w-full items-center space-x-3">
                   <Checkbox
                     id="exportBranches"
                     disabled={!exportBranchesSupport}
                     checked={exportBranches}
-                    className="focus:ring-opacity-20 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-50 dark:focus:ring-gray-600 dark:focus:ring-opacity-50 dark:focus:ring-offset-0"
                     onCheckedChange={setExportBranches}
+                    aria-labelledby="exportBranches-label"
                   />
-                  <label
+                  <Label
+                    id="exportBranches-label"
                     htmlFor="exportBranches"
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 dark:text-gray-50"
+                    className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   >
                     {exportBranchesSupport
-                      ? localize('com_nav_enabled')
+                      ? localize('com_nav_export_all_message_branches')
                       : localize('com_nav_not_supported')}
-                  </label>
+                  </Label>
                 </div>
               </div>
               {type === 'json' ? (
@@ -149,19 +167,20 @@ export default function ExportModal({
                   <Label htmlFor="recursive" className="text-left text-sm font-medium">
                     {localize('com_nav_export_recursive_or_sequential')}
                   </Label>
-                  <div className="flex h-[40px] w-full items-center space-x-3">
+                  <div className="flex h-[2.5rem] w-full items-center space-x-3">
                     <Checkbox
                       id="recursive"
                       checked={recursive}
-                      className="focus:ring-opacity-20 dark:border-gray-500 dark:bg-gray-700 dark:text-gray-50 dark:focus:ring-gray-600 dark:focus:ring-opacity-50 dark:focus:ring-offset-0"
                       onCheckedChange={setRecursive}
+                      aria-labelledby="recursive-label"
                     />
-                    <label
+                    <Label
+                      id="recursive-label"
                       htmlFor="recursive"
-                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 dark:text-gray-50"
+                      className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                     >
                       {localize('com_nav_export_recursive')}
-                    </label>
+                    </Label>
                   </div>
                 </div>
               ) : null}

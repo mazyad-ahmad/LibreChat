@@ -1,8 +1,8 @@
+const { logger } = require('@librechat/data-schemas');
 const { ViolationTypes } = require('librechat-data-provider');
-const { isEnabled, math, removePorts } = require('~/server/utils');
+const { isEnabled, math, removePorts, getBanIp } = require('@librechat/api');
 const { deleteAllUserSessions } = require('~/models');
 const getLogStores = require('./getLogStores');
-const { logger } = require('~/config');
 
 const { BAN_VIOLATIONS, BAN_INTERVAL } = process.env ?? {};
 const interval = math(BAN_INTERVAL, 20);
@@ -32,7 +32,6 @@ const banViolation = async (req, res, errorMessage) => {
   if (!isEnabled(BAN_VIOLATIONS)) {
     return;
   }
-
   if (!errorMessage) {
     return;
   }
@@ -47,16 +46,26 @@ const banViolation = async (req, res, errorMessage) => {
   }
 
   await deleteAllUserSessions({ userId: user_id });
+
+  /** Clear OpenID session tokens if present */
+  if (req.session?.openidTokens) {
+    delete req.session.openidTokens;
+  }
+
   res.clearCookie('refreshToken');
+  res.clearCookie('openid_access_token');
+  res.clearCookie('openid_id_token');
+  res.clearCookie('openid_user_id');
+  res.clearCookie('token_provider');
 
   const banLogs = getLogStores(ViolationTypes.BAN);
   const duration = errorMessage.duration || banLogs.opts.ttl;
-
   if (duration <= 0) {
     return;
   }
 
   req.ip = removePorts(req);
+  const banIp = getBanIp(req);
   logger.info(
     `[BAN] Banning user ${user_id} ${req.ip ? `@ ${req.ip} ` : ''}for ${
       duration / 1000 / 60
@@ -65,8 +74,8 @@ const banViolation = async (req, res, errorMessage) => {
 
   const expiresAt = Date.now() + duration;
   await banLogs.set(user_id, { type, violation_count, duration, expiresAt });
-  if (req.ip) {
-    await banLogs.set(req.ip, { type, user_id, violation_count, duration, expiresAt });
+  if (banIp) {
+    await banLogs.set(banIp, { type, user_id, violation_count, duration, expiresAt });
   }
 
   errorMessage.ban = true;

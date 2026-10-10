@@ -4,9 +4,10 @@ import type { TPreset } from 'librechat-data-provider';
 type UIPreset = Partial<TPreset> & { presetOverride?: Partial<TPreset> };
 type TCleanupPreset = {
   preset?: UIPreset;
+  defaultParamsEndpoint?: string | null;
 };
 
-const cleanupPreset = ({ preset: _preset }: TCleanupPreset): TPreset => {
+const cleanupPreset = ({ preset: _preset, defaultParamsEndpoint }: TCleanupPreset): TPreset => {
   const { endpoint, endpointType } = _preset ?? ({} as UIPreset);
   if (endpoint == null || endpoint === '') {
     console.error(`Unknown endpoint ${endpoint}`, _preset);
@@ -20,8 +21,28 @@ const cleanupPreset = ({ preset: _preset }: TCleanupPreset): TPreset => {
   const { presetOverride = {}, ...rest } = _preset ?? {};
   const preset = { ...rest, ...presetOverride };
 
-  /* @ts-ignore: endpoint can be a custom defined name */
-  const parsedPreset = parseConvo({ endpoint, endpointType, conversation: preset });
+  // Handle deprecated chatGptLabel field
+  // If both chatGptLabel and modelLabel exist, prioritize modelLabel and remove chatGptLabel
+  // If only chatGptLabel exists, migrate it to modelLabel
+  if (preset.chatGptLabel && preset.modelLabel) {
+    // Both exist: prioritize modelLabel, remove chatGptLabel
+    delete preset.chatGptLabel;
+  } else if (preset.chatGptLabel && !preset.modelLabel) {
+    // Only chatGptLabel exists: migrate to modelLabel
+    preset.modelLabel = preset.chatGptLabel;
+    delete preset.chatGptLabel;
+  } else if ('chatGptLabel' in preset) {
+    // chatGptLabel exists but is empty/falsy: remove it
+    delete preset.chatGptLabel;
+  }
+
+  const parsedPreset = parseConvo({
+    /* @ts-ignore: endpoint can be a custom defined name */
+    endpoint,
+    endpointType,
+    conversation: preset,
+    defaultParamsEndpoint,
+  });
 
   return {
     presetId: _preset?.presetId ?? null,

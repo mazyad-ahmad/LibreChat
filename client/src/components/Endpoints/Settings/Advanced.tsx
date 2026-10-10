@@ -1,7 +1,5 @@
 import TextareaAutosize from 'react-textarea-autosize';
 import { ImageDetail, imageDetailNumeric, imageDetailValue } from 'librechat-data-provider';
-import type { ValueType } from '@rc-component/mini-decimal';
-import type { TModelSelectProps } from '~/common';
 import {
   Input,
   Label,
@@ -10,8 +8,10 @@ import {
   HoverCard,
   InputNumber,
   HoverCardTrigger,
-} from '~/components/ui';
-import { cn, defaultTextProps, optionText, removeFocusOutlines } from '~/utils/';
+} from '@librechat/client';
+import type { ValueType } from '@rc-component/mini-decimal';
+import type { TModelSelectProps } from '~/common';
+import { cn, defaultTextProps, optionText, removeFocusOutlines } from '~/utils';
 import { useLocalize, useDebouncedInput } from '~/hooks';
 import OptionHover from './OptionHover';
 import { ESide } from '~/common';
@@ -81,7 +81,9 @@ export default function Settings({
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="chatGptLabel" className="text-left text-sm font-medium">
             {localize('com_endpoint_custom_name')}{' '}
-            <small className="opacity-40">({localize('com_endpoint_default_blank')})</small>
+            <small className="high-contrast:opacity-100 opacity-40">
+              ({localize('com_endpoint_default_blank')})
+            </small>
           </Label>
           <Input
             id="chatGptLabel"
@@ -99,7 +101,9 @@ export default function Settings({
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="promptPrefix" className="text-left text-sm font-medium">
             {localize('com_endpoint_prompt_prefix')}{' '}
-            <small className="opacity-40">({localize('com_endpoint_default_blank')})</small>
+            <small className="high-contrast:opacity-100 opacity-40">
+              ({localize('com_endpoint_default_blank')})
+            </small>
           </Label>
           <TextareaAutosize
             id="promptPrefix"
@@ -109,7 +113,7 @@ export default function Settings({
             placeholder={localize('com_endpoint_openai_prompt_prefix_placeholder')}
             className={cn(
               defaultTextProps,
-              'flex max-h-[138px] min-h-[100px] w-full resize-none px-3 py-2 ',
+              'flex max-h-[8.625rem] min-h-[6.25rem] w-full resize-none px-3 py-2',
             )}
           />
         </div>
@@ -120,7 +124,7 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="temp-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_temperature')}{' '}
-                <small className="opacity-40">
+                <small className="high-contrast:opacity-100 opacity-40">
                   ({localize('com_endpoint_default_with_num', { 0: '1' })})
                 </small>
               </Label>
@@ -137,7 +141,7 @@ export default function Settings({
                   defaultTextProps,
                   cn(
                     optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right h-auto w-12 border-0 group-hover/temp:border-gray-200',
+                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
                   ),
                 )}
               />
@@ -151,6 +155,7 @@ export default function Settings({
               min={0}
               step={0.01}
               className="flex h-4 w-full"
+              aria-labelledby="temp-int"
             />
           </HoverCardTrigger>
           <OptionHover endpoint={optionEndpoint ?? ''} type="temp" side={ESide.Left} />
@@ -160,7 +165,9 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="top-p-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_top_p')}{' '}
-                <small className="opacity-40">({localize('com_endpoint_default')}: 1)</small>
+                <small className="high-contrast:opacity-100 opacity-40">
+                  ({localize('com_endpoint_default_with_num', { 0: '1' })})
+                </small>
               </Label>
               <InputNumber
                 id="top-p-int"
@@ -175,7 +182,7 @@ export default function Settings({
                   defaultTextProps,
                   cn(
                     optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right h-auto w-12 border-0 group-hover/temp:border-gray-200',
+                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
                   ),
                 )}
               />
@@ -189,6 +196,7 @@ export default function Settings({
               min={0}
               step={0.01}
               className="flex h-4 w-full"
+              aria-labelledby="top-p-int"
             />
           </HoverCardTrigger>
           <OptionHover endpoint={optionEndpoint ?? ''} type="topp" side={ESide.Left} />
@@ -199,7 +207,9 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="freq-penalty-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_frequency_penalty')}{' '}
-                <small className="opacity-40">({localize('com_endpoint_default')}: 0)</small>
+                <small className="high-contrast:opacity-100 opacity-40">
+                  ({localize('com_endpoint_default_with_num', { 0: '0' })})
+                </small>
               </Label>
               <InputNumber
                 id="freq-penalty-int"
@@ -214,7 +224,7 @@ export default function Settings({
                   defaultTextProps,
                   cn(
                     optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right h-auto w-12 border-0 group-hover/temp:border-gray-200',
+                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
                   ),
                 )}
               />
@@ -228,6 +238,7 @@ export default function Settings({
               min={-2}
               step={0.01}
               className="flex h-4 w-full"
+              aria-labelledby="freq-penalty-int"
             />
           </HoverCardTrigger>
           <OptionHover endpoint={optionEndpoint ?? ''} type="freq" side={ESide.Left} />
@@ -238,7 +249,9 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="pres-penalty-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_presence_penalty')}{' '}
-                <small className="opacity-40">({localize('com_endpoint_default')}: 0)</small>
+                <small className="high-contrast:opacity-100 opacity-40">
+                  ({localize('com_endpoint_default_with_num', { 0: '0' })})
+                </small>
               </Label>
               <InputNumber
                 id="pres-penalty-int"
@@ -253,7 +266,7 @@ export default function Settings({
                   defaultTextProps,
                   cn(
                     optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right h-auto w-12 border-0 group-hover/temp:border-gray-200',
+                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
                   ),
                 )}
               />
@@ -267,24 +280,25 @@ export default function Settings({
               min={-2}
               step={0.01}
               className="flex h-4 w-full"
+              aria-labelledby="pres-penalty-int"
             />
           </HoverCardTrigger>
           <OptionHover endpoint={optionEndpoint ?? ''} type="pres" side={ESide.Left} />
         </HoverCard>
         <div className="w-full">
           <div className="mb-2 flex w-full justify-between gap-2">
-            <label
+            <Label
               htmlFor="resend-files"
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 dark:text-gray-50"
+              className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
             >
               <small>{localize('com_endpoint_plug_resend_files')}</small>
-            </label>
-            <label
+            </Label>
+            <Label
               htmlFor="image-detail-value"
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 dark:text-gray-50"
+              className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
             >
               <small>{localize('com_endpoint_plug_image_detail')}</small>
-            </label>
+            </Label>
             <Input
               id="image-detail-value"
               disabled={true}
@@ -292,8 +306,8 @@ export default function Settings({
               className={cn(
                 defaultTextProps,
                 optionText,
-                'flex rounded-md bg-transparent py-2 text-xs focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 dark:border-gray-700',
-                'pointer-events-none max-h-5 w-12 border-0 group-hover/temp:border-gray-200',
+                'border-border-light focus:ring-ring-primary flex rounded-md bg-transparent py-2 text-xs focus:ring-2 focus:ring-offset-2',
+                'group-hover/temp:border-border-light pointer-events-none max-h-5 w-12 border-0',
               )}
             />
           </div>
@@ -306,12 +320,13 @@ export default function Settings({
                   onCheckedChange={(checked: boolean) => setResendFiles(checked)}
                   disabled={readonly}
                   className="flex"
+                  aria-label={localize('com_endpoint_plug_resend_files')}
                 />
                 <OptionHover endpoint={optionEndpoint ?? ''} type="resend" side={ESide.Bottom} />
               </HoverCardTrigger>
             </HoverCard>
             <HoverCard openDelay={500}>
-              <HoverCardTrigger className="flex w-[52%] md:w-[125px]">
+              <HoverCardTrigger className="flex w-[52%] md:w-[7.8125rem]">
                 <Slider
                   id="image-detail-slider"
                   disabled={readonly}
@@ -323,6 +338,7 @@ export default function Settings({
                   max={2}
                   min={0}
                   step={1}
+                  aria-label={localize('com_endpoint_plug_image_detail')}
                 />
                 <OptionHover endpoint={optionEndpoint ?? ''} type="detail" side={ESide.Bottom} />
               </HoverCardTrigger>

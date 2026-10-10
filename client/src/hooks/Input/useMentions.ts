@@ -3,11 +3,13 @@ import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   Permissions,
   alternateName,
+  PermissionBits,
   EModelEndpoint,
   PermissionTypes,
   isAgentsEndpoint,
   getConfigDefaults,
   isAssistantsEndpoint,
+  resolveModelSpecEndpoint,
 } from 'librechat-data-provider';
 import type { TAssistantsMap, TEndpointsConfig } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
@@ -18,9 +20,11 @@ import {
   useGetStartupConfig,
 } from '~/data-provider';
 import useAssistantListMap from '~/hooks/Assistants/useAssistantListMap';
+import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { mapEndpoints, getPresetTitle } from '~/utils';
 import { EndpointIcon } from '~/components/Endpoints';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
+import { filterMentionEndpoints } from './mentions';
 
 const defaultInterface = getConfigDefaults().interface;
 
@@ -34,20 +38,20 @@ const assistantMapFn =
     assistantMap: TAssistantsMap;
     endpointsConfig: TEndpointsConfig;
   }) =>
-    ({ id, name, description }) => ({
-      type: endpoint,
-      label: name ?? '',
-      value: id,
-      description: description ?? '',
-      icon: EndpointIcon({
-        conversation: { assistant_id: id, endpoint },
-        containerClassName: 'shadow-stroke overflow-hidden rounded-full',
-        endpointsConfig: endpointsConfig,
-        context: 'menu-item',
-        assistantMap,
-        size: 20,
-      }),
-    });
+  ({ id, name, description }) => ({
+    type: endpoint,
+    label: name ?? '',
+    value: id,
+    description: description ?? '',
+    icon: EndpointIcon({
+      conversation: { assistant_id: id, endpoint },
+      containerClassName: 'shadow-stroke overflow-hidden rounded-full',
+      endpointsConfig: endpointsConfig,
+      context: 'menu-item',
+      assistantMap,
+      size: 20,
+    }),
+  });
 
 export default function useMentions({
   assistantMap,
@@ -61,10 +65,11 @@ export default function useMentions({
     permission: Permissions.USE,
   });
 
-  const { data: presets } = useGetPresetsQuery();
-  const { data: modelsConfig } = useGetModelsQuery();
-  const { data: startupConfig } = useGetStartupConfig();
-  const { data: endpointsConfig } = useGetEndpointsQuery();
+  const agentsMap = useAgentsMapContext();
+  const { data: presets, isLoading: isLoadingPresets } = useGetPresetsQuery();
+  const { data: modelsConfig, isLoading: isLoadingModels } = useGetModelsQuery();
+  const { data: startupConfig, isLoading: isLoadingStartup } = useGetStartupConfig();
+  const { data: endpointsConfig, isLoading: isLoadingEndpoints } = useGetEndpointsQuery();
   const { data: endpoints = [] } = useGetEndpointsQuery({
     select: mapEndpoints,
   });
@@ -79,28 +84,50 @@ export default function useMentions({
     () => startupConfig?.interface ?? defaultInterface,
     [startupConfig?.interface],
   );
-  const { data: agentsList = null } = useListAgentsQuery(undefined, {
-    enabled: hasAgentAccess && interfaceConfig.modelSelect === true,
-    select: (res) => {
-      const { data } = res;
-      return data.map(({ id, name, avatar }) => ({
-        value: id,
-        label: name ?? '',
-        type: EModelEndpoint.agents,
-        icon: EndpointIcon({
-          conversation: {
-            agent_id: id,
-            endpoint: EModelEndpoint.agents,
-            iconURL: avatar?.filepath,
-          },
-          containerClassName: 'shadow-stroke overflow-hidden rounded-full',
-          endpointsConfig: endpointsConfig,
-          context: 'menu-item',
-          size: 20,
-        }),
-      }));
+  const includedEndpoints = useMemo(
+    () => new Set(startupConfig?.modelSpecs?.addedEndpoints ?? []),
+    [startupConfig?.modelSpecs?.addedEndpoints],
+  );
+  const validEndpoints = useMemo(
+    () =>
+      filterMentionEndpoints({
+        endpoints,
+        includedEndpoints,
+        includeAssistants,
+        hasAgentAccess,
+      }),
+    [endpoints, includedEndpoints, includeAssistants, hasAgentAccess],
+  );
+  const validEndpointSet = useMemo(() => new Set(validEndpoints), [validEndpoints]);
+  const agentQueryEnabled =
+    hasAgentAccess &&
+    interfaceConfig.modelSelect === true &&
+    (includedEndpoints.size === 0 || includedEndpoints.has(EModelEndpoint.agents));
+  const { data: agentsList = null, isLoading: isLoadingAgents } = useListAgentsQuery(
+    { requiredPermission: PermissionBits.VIEW },
+    {
+      enabled: agentQueryEnabled,
+      select: (res) => {
+        const { data } = res;
+        return data.map(({ id, name, avatar }) => ({
+          value: id,
+          label: name ?? '',
+          type: EModelEndpoint.agents,
+          icon: EndpointIcon({
+            conversation: {
+              agent_id: id,
+              endpoint: EModelEndpoint.agents,
+              iconURL: avatar?.filepath,
+            },
+            containerClassName: 'shadow-stroke overflow-hidden rounded-full',
+            endpointsConfig: endpointsConfig,
+            context: 'menu-item',
+            size: 20,
+          }),
+        }));
+      },
     },
-  });
+  );
   const assistantListMap = useMemo(
     () => ({
       [EModelEndpoint.assistants]: listMap[EModelEndpoint.assistants]
@@ -125,14 +152,26 @@ export default function useMentions({
     [listMap, assistantMap, endpointsConfig],
   );
 
-  const modelSpecs = useMemo(() => startupConfig?.modelSpecs?.list ?? [], [startupConfig]);
-
-  const options: MentionOption[] = useMemo(() => {
-    let validEndpoints = endpoints;
-    if (!includeAssistants) {
-      validEndpoints = endpoints.filter((endpoint) => !isAssistantsEndpoint(endpoint));
+  const modelSpecs = useMemo(() => {
+    const specs = startupConfig?.modelSpecs?.list ?? [];
+    if (!agentsMap) {
+      return specs;
     }
 
+    /**
+     * Filter modelSpecs to only include agents the user has access to.
+     * Use agentsMap which already contains permission-filtered agents (consistent with other components).
+     */
+    return specs.filter((spec) => {
+      if (spec.preset?.endpoint === EModelEndpoint.agents && spec.preset?.agent_id) {
+        return spec.preset.agent_id in agentsMap;
+      }
+      /** Keep non-agent modelSpecs */
+      return true;
+    });
+  }, [startupConfig, agentsMap]);
+
+  const options: MentionOption[] = useMemo(() => {
     const modelOptions = validEndpoints.flatMap((endpoint) => {
       if (isAssistantsEndpoint(endpoint) || isAgentsEndpoint(endpoint)) {
         return [];
@@ -164,6 +203,7 @@ export default function useMentions({
         icon: EndpointIcon({
           conversation: {
             ...modelSpec.preset,
+            endpoint: resolveModelSpecEndpoint(modelSpec) ?? null,
             iconURL: modelSpec.iconURL,
           },
           endpointsConfig,
@@ -183,14 +223,18 @@ export default function useMentions({
           size: 20,
         }),
       })),
-      ...(interfaceConfig.modelSelect === true ? (agentsList ?? []) : []),
+      ...(interfaceConfig.modelSelect === true && validEndpointSet.has(EModelEndpoint.agents)
+        ? (agentsList ?? [])
+        : []),
       ...(endpointsConfig?.[EModelEndpoint.assistants] &&
       includeAssistants &&
+      validEndpointSet.has(EModelEndpoint.assistants) &&
       interfaceConfig.modelSelect === true
         ? assistantListMap[EModelEndpoint.assistants] || []
         : []),
       ...(endpointsConfig?.[EModelEndpoint.azureAssistants] &&
       includeAssistants &&
+      validEndpointSet.has(EModelEndpoint.azureAssistants) &&
       interfaceConfig.modelSelect === true
         ? assistantListMap[EModelEndpoint.azureAssistants] || []
         : []),
@@ -217,21 +261,30 @@ export default function useMentions({
     return mentions;
   }, [
     presets,
-    endpoints,
     modelSpecs,
     agentsList,
     assistantMap,
     modelsConfig,
+    validEndpoints,
+    validEndpointSet,
     endpointsConfig,
     assistantListMap,
     includeAssistants,
     interfaceConfig.presets,
-    interfaceConfig.endpointsMenu,
+    interfaceConfig.modelSelect,
   ]);
+
+  const isLoading =
+    isLoadingPresets ||
+    isLoadingModels ||
+    isLoadingStartup ||
+    isLoadingEndpoints ||
+    (agentQueryEnabled && isLoadingAgents);
 
   return {
     options,
     presets,
+    isLoading,
     modelSpecs,
     agentsList,
     modelsConfig,

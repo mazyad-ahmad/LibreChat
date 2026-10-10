@@ -1,7 +1,6 @@
-import { useState, useMemo } from 'react';
-import { OptionTypes } from 'librechat-data-provider';
+import { useState } from 'react';
+import { Label, Switch, HoverCard, HoverCardTrigger } from '@librechat/client';
 import type { DynamicSettingProps } from 'librechat-data-provider';
-import { Label, Switch, HoverCard, HoverCardTrigger } from '~/components/ui';
 import { TranslationKeys, useLocalize, useParameterEffects } from '~/hooks';
 import { useChatContext } from '~/Providers';
 import OptionHover from './OptionHover';
@@ -11,10 +10,10 @@ function DynamicSwitch({
   label = '',
   settingKey,
   defaultValue,
+  enumMappings,
   description = '',
   columnSpan,
   setOption,
-  optionType,
   readonly = false,
   showDefault = false,
   labelCode = false,
@@ -34,21 +33,14 @@ function DynamicSwitch({
     preventDelayedUpdate: true,
   });
 
-  const selectedValue = useMemo(() => {
-    if (optionType === OptionTypes.Custom) {
-      // TODO: custom logic, add to payload but not to conversation
-      return inputValue;
-    }
-
-    return conversation?.[settingKey] ?? defaultValue;
-  }, [conversation, defaultValue, optionType, settingKey, inputValue]);
+  const savedValue = conversation?.[settingKey] ?? defaultValue;
+  const effectiveValue = enumMappings?.[String(savedValue)];
+  const selectedValue = typeof effectiveValue === 'boolean' ? effectiveValue : savedValue;
+  const routeIsForced =
+    typeof enumMappings?.true === 'boolean' && enumMappings.true === enumMappings.false;
 
   const handleCheckedChange = (checked: boolean) => {
-    if (optionType === OptionTypes.Custom) {
-      // TODO: custom logic, add to payload but not to conversation
-      setInputValue(checked);
-      return;
-    }
+    setInputValue(checked);
     setOption(settingKey)(checked);
   };
 
@@ -59,17 +51,17 @@ function DynamicSwitch({
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-switch`}
-              className="text-left text-sm font-medium"
+              className="text-left text-xs font-medium break-words"
             >
-              {labelCode ? localize(label as TranslationKeys) ?? label : label || settingKey}{' '}
+              {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40">
+                <small className="high-contrast:opacity-100 opacity-40">
                   ({localize('com_endpoint_default')}:{' '}
-                  {defaultValue != null ? 'com_ui_on' : 'com_ui_off'})
+                  {defaultValue != null ? localize('com_ui_on') : localize('com_ui_off')})
                 </small>
               )}
             </Label>
@@ -78,13 +70,20 @@ function DynamicSwitch({
             id={`${settingKey}-dynamic-switch`}
             checked={selectedValue}
             onCheckedChange={handleCheckedChange}
-            disabled={readonly}
+            disabled={readonly || routeIsForced}
             className="flex"
+            aria-label={
+              labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey
+            }
           />
         </HoverCardTrigger>
         {description && (
           <OptionHover
-            description={descriptionCode ? localize(description as TranslationKeys) ?? description : description}
+            description={
+              descriptionCode
+                ? (localize(description as TranslationKeys) ?? description)
+                : description
+            }
             side={ESide.Left}
           />
         )}

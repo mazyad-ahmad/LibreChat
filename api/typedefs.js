@@ -7,10 +7,30 @@
  * @typedef {import('openai').OpenAI} OpenAI
  * @memberof typedefs
  */
+/**
+ * @exports OpenAIImagesResponse
+ * @typedef {Promise<import('openai').OpenAI.ImagesResponse>} OpenAIImagesResponse
+ * @memberof typedefs
+ */
 
 /**
  * @exports ServerRequest
- * @typedef {import('express').Request} ServerRequest
+ * @typedef {import('express').Request & {
+ *   user?: IUser;
+ *   config?: AppConfig;
+ * }} ServerRequest
+ * @memberof typedefs
+ */
+
+/**
+ * @template T
+ * @typedef {ReadableStream<T> | NodeJS.ReadableStream} NodeStream
+ * @memberof typedefs
+ */
+
+/**
+ * @template T
+ * @typedef {(req: ServerRequest, filepath: string) => Promise<NodeStream<T>>} NodeStreamDownloader
  * @memberof typedefs
  */
 
@@ -23,6 +43,66 @@
 /**
  * @exports NextFunction
  * @typedef {import('express').NextFunction} NextFunction
+ * @memberof typedefs
+ */
+
+/**
+ * @exports Graph
+ * @typedef {import('@librechat/agents').Graph} Graph
+ * @memberof typedefs
+ */
+
+/**
+ * @exports StandardGraph
+ * @typedef {import('@librechat/agents').StandardGraph} StandardGraph
+ * @memberof typedefs
+ */
+
+/**
+ * @exports MessageContentComplex
+ * @typedef {import('@librechat/agents').MessageContentComplex} MessageContentComplex
+ * @memberof typedefs
+ */
+
+/**
+ * @exports EventHandler
+ * @typedef {import('@librechat/agents').EventHandler} EventHandler
+ * @memberof typedefs
+ */
+
+/**
+ * @exports ModelEndData
+ * @typedef {import('@librechat/agents').ModelEndData} ModelEndData
+ * @memberof typedefs
+ */
+
+/**
+ * @exports ToolEndData
+ * @typedef {import('@librechat/agents').ToolEndData} ToolEndData
+ * @memberof typedefs
+ */
+
+/**
+ * @exports ToolEndCallback
+ * @typedef {import('@librechat/agents').ToolEndCallback} ToolEndCallback
+ * @memberof typedefs
+ */
+
+/**
+ * @exports ChatModelStreamHandler
+ * @typedef {import('@librechat/agents').ChatModelStreamHandler} ChatModelStreamHandler
+ * @memberof typedefs
+ */
+
+/**
+ * @exports ContentAggregator
+ * @typedef {import('@librechat/agents').ContentAggregatorResult['aggregateContent']} ContentAggregator
+ * @memberof typedefs
+ */
+
+/**
+ * @exports GraphEvents
+ * @typedef {import('@librechat/agents').GraphEvents} GraphEvents
  * @memberof typedefs
  */
 
@@ -81,38 +161,26 @@
  */
 
 /**
- * @exports ToolEndData
- * @typedef {import('@librechat/agents').ToolEndData} ToolEndData
- * @memberof typedefs
- */
-
-/**
  * @exports BaseMessage
- * @typedef {import('@langchain/core/messages').BaseMessage} BaseMessage
- * @memberof typedefs
- */
-
-/**
- * @exports ConversationSummaryBufferMemory
- * @typedef {import('langchain/memory').ConversationSummaryBufferMemory} ConversationSummaryBufferMemory
+ * @typedef {import('@librechat/agents/langchain/messages').BaseMessage} BaseMessage
  * @memberof typedefs
  */
 
 /**
  * @exports UsageMetadata
- * @typedef {import('@langchain/core/messages').UsageMetadata} UsageMetadata
+ * @typedef {import('@librechat/agents/langchain/messages').UsageMetadata} UsageMetadata
  * @memberof typedefs
  */
 
 /**
  * @exports LangChainToolCall
- * @typedef {import('@langchain/core/messages/tool').ToolCall} LangChainToolCall
+ * @typedef {import('@librechat/agents/langchain/messages/tool').ToolCall} LangChainToolCall
  * @memberof typedefs
  */
 
 /**
  * @exports GraphRunnableConfig
- * @typedef {import('@langchain/core/runnables').RunnableConfig<{
+ * @typedef {import('@librechat/agents/langchain/runnables').RunnableConfig<{
  *  req: ServerRequest;
  * thread_id: string;
  * run_id: string;
@@ -121,6 +189,8 @@
  * agent_index: number;
  * last_agent_index: number;
  * hide_sequential_outputs: boolean;
+ * version?: 'v1' | 'v2';
+ * streamMode?: string
  * }> & {
  * toolCall?: LangChainToolCall & { stepId?: string };
  * }} GraphRunnableConfig
@@ -404,8 +474,34 @@
  */
 
 /**
+ * @exports ToolCallChunk
+ * @typedef {import('librechat-data-provider').Agents.ToolCallChunk} ToolCallChunk
+ * @memberof typedefs
+ */
+
+/**
  * @exports MessageContentImageUrl
  * @typedef {import('librechat-data-provider').Agents.MessageContentImageUrl} MessageContentImageUrl
+ * @memberof typedefs
+ */
+
+/** Web Search */
+
+/**
+ * @exports SearchResult
+ * @typedef {import('@librechat/agents').SearchResult} SearchResult
+ * @memberof typedefs
+ */
+
+/**
+ * @exports SearchResultData
+ * @typedef {import('@librechat/agents').SearchResultData} SearchResultData
+ * @memberof typedefs
+ */
+
+/**
+ * @exports ValidSource
+ * @typedef {import('librechat-data-provider').ValidSource} ValidSource
  * @memberof typedefs
  */
 
@@ -771,6 +867,13 @@
  * @typedef {import('@librechat/data-schemas').IMongoFile} MongoFile
  * @memberof typedefs
  */
+
+/**
+ * @exports ISession
+ * @typedef {import('@librechat/data-schemas').ISession} ISession
+ * @memberof typedefs
+ */
+
 /**
  * @exports IBalance
  * @typedef {import('@librechat/data-schemas').IBalance} IBalance
@@ -778,8 +881,20 @@
  */
 
 /**
- * @exports MongoUser
- * @typedef {import('@librechat/data-schemas').IUser} MongoUser
+ * @exports IUser
+ * @typedef {import('@librechat/data-schemas').IUser} IUser
+ * @memberof typedefs
+ */
+
+/**
+ * @exports IPluginAuth
+ * @typedef {import('@librechat/data-schemas').IPluginAuth} IPluginAuth
+ * @memberof typedefs
+ */
+
+/**
+ * @exports IRole
+ * @typedef {import('@librechat/data-schemas').IRole} IRole
  * @memberof typedefs
  */
 
@@ -806,7 +921,6 @@
  * @typedef {Object} ImageGenOptions
  * @property {ServerRequest} req - The request object.
  * @property {boolean} isAgent - Whether the request is from an agent.
- * @property {FileSources} fileStrategy - The file strategy to use.
  * @property {processFileURL} processFileURL - The function to process a file URL.
  * @property {boolean} returnMetadata - Whether to return metadata.
  * @property {uploadImageBuffer} uploadImageBuffer - The function to upload an image buffer.
@@ -816,8 +930,11 @@
 /**
  * @typedef {Partial<ImageGenOptions> & {
  *   message?: string,
- *   signal?: AbortSignal
- *   memory?: ConversationSummaryBufferMemory
+ *   signal?: AbortSignal,
+ *   memory?: ConversationSummaryBufferMemory,
+ *   tool_resources?: AgentToolResources,
+ *   jobCreatedAt?: number,
+ *   web_search?: ReturnType<typeof import('~/server/services/Tools/search').createOnSearchResults>,
  * }} LoadToolOptions
  * @memberof typedefs
  */
@@ -925,6 +1042,18 @@
  */
 
 /**
+ * @exports TEphemeralAgent
+ * @typedef {import('librechat-data-provider').TEphemeralAgent} TEphemeralAgent
+ * @memberof typedefs
+ */
+
+/**
+ * @exports TWebSearchKeys
+ * @typedef {import('@librechat/data-schemas').TWebSearchKeys} TWebSearchKeys
+ * @memberof typedefs
+ */
+
+/**
  * @exports AgentToolResources
  * @typedef {import('librechat-data-provider').AgentToolResources} AgentToolResources
  * @memberof typedefs
@@ -954,15 +1083,46 @@
  * @memberof typedefs
  */
 
+/** Permissions */
+/**
+ * @exports TUpdateResourcePermissionsRequest
+ * @typedef {import('librechat-data-provider').TUpdateResourcePermissionsRequest} TUpdateResourcePermissionsRequest
+ * @memberof typedefs
+ */
+
+/**
+ * @exports TUpdateResourcePermissionsResponse
+ * @typedef {import('librechat-data-provider').TUpdateResourcePermissionsResponse} TUpdateResourcePermissionsResponse
+ * @memberof typedefs
+ */
+
+/**
+ * @exports AppConfig
+ * @typedef {import('@librechat/data-schemas').AppConfig} AppConfig
+ * @memberof typedefs
+ */
+
 /**
  * @exports JsonSchemaType
- * @typedef {import('librechat-data-provider').JsonSchemaType} JsonSchemaType
+ * @typedef {import('@librechat/data-schemas').JsonSchemaType} JsonSchemaType
  * @memberof typedefs
  */
 
 /**
  * @exports MCPServers
- * @typedef {import('librechat-mcp').MCPServers} MCPServers
+ * @typedef {import('@librechat/api').MCPServers} MCPServers
+ * @memberof typedefs
+ */
+
+/**
+ * @exports BalanceReservation
+ * @typedef {import('@librechat/api').BalanceReservation} BalanceReservation
+ * @memberof typedefs
+ */
+
+/**
+ * @exports BalanceReservations
+ * @typedef {import('@librechat/api').BalanceReservations} BalanceReservations
  * @memberof typedefs
  */
 
@@ -974,31 +1134,43 @@
 
 /**
  * @exports MCPManager
- * @typedef {import('librechat-mcp').MCPManager} MCPManager
+ * @typedef {import('@librechat/api').MCPManager} MCPManager
+ * @memberof typedefs
+ */
+
+/**
+ * @exports MCPConnection
+ * @typedef {import('@librechat/api').MCPConnection} MCPConnection
+ * @memberof typedefs
+ */
+
+/**
+ * @exports LCFunctionTool
+ * @typedef {import('@librechat/api').LCFunctionTool} LCFunctionTool
  * @memberof typedefs
  */
 
 /**
  * @exports FlowStateManager
- * @typedef {import('librechat-mcp').FlowStateManager} FlowStateManager
+ * @typedef {import('@librechat/api').FlowStateManager} FlowStateManager
  * @memberof typedefs
  */
 
 /**
  * @exports LCAvailableTools
- * @typedef {import('librechat-mcp').LCAvailableTools} LCAvailableTools
+ * @typedef {import('@librechat/api').LCAvailableTools} LCAvailableTools
  * @memberof typedefs
  */
 
 /**
  * @exports LCTool
- * @typedef {import('librechat-mcp').LCTool} LCTool
+ * @typedef {import('@librechat/api').LCTool} LCTool
  * @memberof typedefs
  */
 
 /**
  * @exports FormattedContent
- * @typedef {import('librechat-mcp').FormattedContent} FormattedContent
+ * @typedef {import('@librechat/api').FormattedContent} FormattedContent
  * @memberof typedefs
  */
 
@@ -1106,12 +1278,6 @@
  */
 
 /**
- * @exports OpenAISpecClient
- * @typedef {import('./app/clients/OpenAIClient')} OpenAISpecClient
- * @memberof typedefs
- */
-
-/**
  * @exports TAgentClient
  * @typedef {import('./server/controllers/agents/client')} TAgentClient
  * @memberof typedefs
@@ -1121,7 +1287,7 @@
  * @typedef {Object} AgentClientOptions
  * @property {Agent} agent - The agent configuration object
  * @property {string} endpoint - The endpoint identifier for the agent
- * @property {Object} req - The request object
+ * @property {ServerRequest} req - The request object
  * @property {string} [name] - The username
  * @property {string} [modelLabel] - The label for the model being used
  * @property {number} [maxContextTokens] - Maximum number of tokens allowed in context
@@ -1134,6 +1300,7 @@
  * @property {string} [proxy] - Proxy configuration
  * @property {Object} [tools] - Available tools for the agent
  * @property {Object} [eventHandlers] - Custom event handlers
+ * @property {import('@librechat/api').AgentStartupTelemetry} [startupTelemetry] - Startup latency recorder
  * @property {Object} [addParams] - Additional parameters to add to requests
  * @property {string[]} [dropParams] - Parameters to remove from requests
  * @memberof typedefs
@@ -1206,12 +1373,7 @@
 
 /**
  * @exports FunctionTool
- * @typedef {Object} FunctionTool
- * @property {'function'} type - The type of tool, 'function'.
- * @property {Object} function - The function definition.
- * @property {string} function.description - A description of what the function does.
- * @property {string} function.name - The name of the function to be called.
- * @property {Object} function.parameters - The parameters the function accepts, described as a JSON Schema object.
+ * @typedef {import('@librechat/data-schemas').FunctionTool} FunctionTool
  * @memberof typedefs
  */
 
@@ -1252,7 +1414,7 @@
  * @property {string} [model] - The model that the assistant used for this run.
  * @property {string} [instructions] - The instructions that the assistant used for this run.
  * @property {string} [additional_instructions] - Optional. Appends additional instructions
- * at theend of the instructions for the run. This is useful for modifying
+ * at the end of the instructions for the run. This is useful for modifying
  * @property {Tool[]} [tools] - The list of tools used for this run.
  * @property {string[]} [file_ids] - The list of File IDs used for this run.
  * @property {Object} [metadata] - Metadata associated with this run.
@@ -1344,13 +1506,11 @@
  * @typedef {Object} EndpointServiceConfig
  * @property {string} openAIApiKey - The API key for OpenAI.
  * @property {string} azureOpenAIApiKey - The API key for Azure OpenAI.
- * @property {boolean} useAzurePlugins - Flag to indicate if Azure plugins are used.
  * @property {boolean} userProvidedOpenAI - Flag to indicate if OpenAI API key is user provided.
  * @property {string} googleKey - The Palm key.
  * @property {boolean|{userProvide: boolean}} [openAI] - Flag to indicate if OpenAI endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [assistant] - Flag to indicate if Assistant endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [azureOpenAI] - Flag to indicate if Azure OpenAI endpoint is user provided, or its configuration.
- * @property {boolean|{userProvide: boolean}} [chatGPTBrowser] - Flag to indicate if ChatGPT Browser endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [anthropic] - Flag to indicate if Anthropic endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [google] - Flag to indicate if Google endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean, userProvideURL: boolean, name: string}} [custom] - Custom Endpoint configuration.
@@ -1366,26 +1526,14 @@
  */
 
 /**
- * @exports GptPlugins
- * @typedef {Object} GptPlugins
- * @property {Plugin[]} plugins - An array of plugins available.
- * @property {string[]} availableAgents - Available agents, 'classic' or 'functions'.
- * @property {boolean} userProvide - A flag indicating if the user has provided the data.
- * @property {boolean} azure - A flag indicating if azure plugins are used.
- * @memberof typedefs
- */
-
-/**
  * @exports DefaultConfig
  * @typedef {Object} DefaultConfig
  * @property {boolean|{userProvide: boolean}} [openAI] - Flag to indicate if OpenAI endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [assistant] - Flag to indicate if Assistant endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [azureOpenAI] - Flag to indicate if Azure OpenAI endpoint is user provided, or its configuration.
- * @property {boolean|{userProvide: boolean}} [chatGPTBrowser] - Flag to indicate if ChatGPT Browser endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [anthropic] - Flag to indicate if Anthropic endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean}} [google] - Flag to indicate if Google endpoint is user provided, or its configuration.
  * @property {boolean|{userProvide: boolean, userProvideURL: boolean, name: string}} [custom] - Custom Endpoint configuration.
- * @property {boolean|GptPlugins} [gptPlugins] - Configuration for GPT plugins.
  * @memberof typedefs
  */
 
@@ -1521,26 +1669,10 @@
  * @memberof typedefs
  */
 
-// /**
-//  * @typedef {OpenAI & {
-// * req: Express.Request,
-// * res: Express.Response
-// * getPartialText: () => string,
-// * processedFileIds: Set<string>,
-// * mappedOrder: Map<string, number>,
-// * completeToolCallSteps: Set<string>,
-// * seenCompletedMessages: Set<string>,
-// * seenToolCalls: Map<string, StepToolCall>,
-// * progressCallback: (options: Object) => void,
-// * addContentData: (data: TContentData) => void,
-// * responseMessage: ResponseMessage,
-// * }} OpenAIClient - for reference only
-// */
-
 /**
  * @typedef {Object} RunClient
  *
- * @property {Express.Request} req - The Express request object.
+ * @property {ServerRequest} req - The Express request object.
  * @property {Express.Response} res - The Express response object.
  * @property {?import('https-proxy-agent').HttpsProxyAgent} httpAgent - An optional HTTP proxy agent for the request.
 
@@ -1641,8 +1773,8 @@
  * @property {String} conversationId - The ID of the conversation.
  * @property {String} model - The model name.
  * @property {String} context - The context in which the transaction is made.
+ * @property {AppConfig['balance']} [balance] - The balance config
  * @property {EndpointTokenConfig} [endpointTokenConfig] - The current endpoint token config.
- * @property {object} [cacheUsage] - Cache usage, if any.
  * @property {String} [valueKey] - The value key (optional).
  * @memberof typedefs
  */
@@ -1687,9 +1819,11 @@
  * @callback sendCompletion
  * @param {Array<ChatCompletionMessage> | string} payload - The messages or prompt to send to the model
  * @param {object} opts - Options for the completion
+ * @param {AppConfig} opts.appConfig - Callback function to handle token progress
  * @param {onTokenProgress} opts.onProgress - Callback function to handle token progress
  * @param {AbortController} opts.abortController - AbortController instance
- * @returns {Promise<string>}
+ * @param {Record<string, Record<string, string>>} [opts.userMCPAuthMap]
+ * @returns {Promise<{ content: Promise<MessageContentComplex[]>; metadata: Record<string, unknown>; }>}
  * @memberof typedefs
  */
 

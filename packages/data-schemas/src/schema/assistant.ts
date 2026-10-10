@@ -1,20 +1,7 @@
-import { Schema, Document, Types } from 'mongoose';
+import { Schema } from 'mongoose';
+import type { IAssistant } from '~/types';
 
-export interface IAssistant extends Document {
-  user: Types.ObjectId;
-  assistant_id: string;
-  avatar?: {
-    filepath: string;
-    source: string;
-  };
-  conversation_starters?: string[];
-  access_level?: number;
-  file_ids?: string[];
-  actions?: string[];
-  append_current_datetime?: boolean;
-}
-
-const assistantSchema = new Schema<IAssistant>(
+const assistantSchema: Schema<IAssistant> = new Schema<IAssistant>(
   {
     user: {
       type: Schema.Types.ObjectId,
@@ -25,6 +12,9 @@ const assistantSchema = new Schema<IAssistant>(
       type: String,
       index: true,
       required: true,
+    },
+    endpoint: {
+      type: String,
     },
     avatar: {
       type: Schema.Types.Mixed,
@@ -43,10 +33,16 @@ const assistantSchema = new Schema<IAssistant>(
       type: Boolean,
       default: false,
     },
+    tenantId: {
+      type: String,
+      index: true,
+    },
   },
   {
     timestamps: true,
   },
 );
+
+assistantSchema.index({ tenantId: 1, 'avatar.filepath': 1 });
 
 export default assistantSchema;
